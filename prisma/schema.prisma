@@ -1,0 +1,216 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model PrivateClinic {
+  id                  String  @id @default(uuid())
+  fullName            String
+  privatePracticeName String
+  phone               String
+  email               String  @unique
+  password            String
+  isPaymentReminderOn Boolean @default(false)
+  isPaymentConfirmOn  Boolean @default(false)
+  isPlanChangedOn     Boolean @default(false)
+
+  subscriptionPlanId String?
+  subscriptionPlan   SubscriptionPlan? @relation(fields: [subscriptionPlanId], references: [id])
+  invoices           Invoice[]         @relation("ClinicInvoice")
+  therapists         Therapist[]
+  clients            Client[]
+  supportTickets     Support[]         @relation("ClinicSupport")
+
+  paymentMethods PaymentMethod[] @relation("ClinicPayment")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Therapist {
+  id                     String    @id @default(uuid())
+  fullName               String
+  licenseNumber          String?
+  qualification          String?
+  email                  String    @unique
+  phone                  String
+  speciality             String?
+  defaultSessionDuration Int?
+  timeZone               String?
+  availabilityStartTime  DateTime?
+  availabilityEndTime    DateTime?
+  password               String
+
+  clinicId String?
+  clinic   PrivateClinic? @relation(fields: [clinicId], references: [id])
+
+  subscriptionPlanId String?
+  subscriptionPlan   SubscriptionPlan? @relation(fields: [subscriptionPlanId], references: [id])
+
+  paymentMethods PaymentMethod[] @relation("TherapistPayment")
+  invoices       Invoice[]       @relation("TherapistInvoice")
+  clients        Client[]
+  appointments   Appointment[]
+  supportTickets Support[]       @relation("TherapistSupport")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model PaymentMethod {
+  id        String   @id @default(uuid())
+  ownerType UserType
+  ownerId   String
+
+  clinicId String?
+  clinic   PrivateClinic? @relation("ClinicPayment", fields: [clinicId], references: [id])
+
+  therapistId String?
+  therapist   Therapist? @relation("TherapistPayment", fields: [therapistId], references: [id])
+
+  cardholderName String
+  cardNumber     String
+  expiryDate     DateTime
+  cvv            String
+  cardEntity     String
+  createdAt      DateTime @default(now())
+}
+
+model SubscriptionPlan {
+  id        String    @id @default(uuid())
+  planName  String
+  price     Float
+  duration  Int
+  features  String
+  createdAt DateTime  @default(now())
+  expiredAt DateTime?
+
+  clinics    PrivateClinic[]
+  therapists Therapist[]
+}
+
+model Invoice {
+  id        String   @id @default(uuid())
+  ownerType UserType
+  ownerId   String
+
+  clinicId String?
+  clinic   PrivateClinic? @relation("ClinicInvoice", fields: [clinicId], references: [id])
+
+  therapistId String?
+  therapist   Therapist? @relation("TherapistInvoice", fields: [therapistId], references: [id])
+
+  status    String
+  createdAt DateTime @default(now())
+}
+
+model Client {
+  id              String  @id @default(uuid())
+  therapistId     String
+  name            String
+  email           String
+  phone           String
+  overallProgress String?
+  treatmentGoals  String?
+  status          String? @default("active")
+  condition       String?
+
+  // Changed to JSON fields for structured data
+  healthIssues      Json? // Array of strings: ["Depression", "Anxiety"]
+  crisisHistories   Json? // Array of objects: [{ title, date, priority, actionTaken }]
+  treatmentProgress Json? // Object: { title, recommendation, percentage }
+  sessionHistory    Json? // Array of objects: [{ date, time, note, duration }]
+
+  therapist    Therapist     @relation(fields: [therapistId], references: [id])
+  appointments Appointment[]
+
+  privateClinics PrivateClinic[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Appointment {
+  id String @id @default(uuid())
+
+  // Relations
+  clientId String
+  client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  therapistId String
+  therapist   Therapist @relation(fields: [therapistId], references: [id], onDelete: Cascade)
+
+  // Scheduling
+  scheduledDate DateTime
+  scheduledTime String   // Stored as "HH:MM" format
+  duration      Int      @default(60) // in minutes
+
+  // Session details
+  sessionType String @default("virtual") // "virtual" or "onsite"
+  phone       String
+  email       String
+
+  // Status
+  status String @default("scheduled") // "scheduled", "confirmed", "completed", "cancelled", "no-show", "rescheduled"
+
+  // Notes
+  notes           String? @db.Text
+  completionNotes String? @db.Text
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([clientId])
+  @@index([therapistId])
+  @@index([scheduledDate])
+  @@index([status])
+  @@map("appointments")
+}
+
+model Support {
+  id        String   @id @default(uuid())
+  ownerType UserType
+  ownerId   String
+
+  clinicId String?
+  clinic   PrivateClinic? @relation("ClinicSupport", fields: [clinicId], references: [id])
+
+  therapistId String?
+  therapist   Therapist? @relation("TherapistSupport", fields: [therapistId], references: [id])
+
+  subject   String
+  message   String   @db.Text
+  
+  // Status and Reply fields
+  status    String   @default("open") // open, in-progress, resolved, closed
+  
+  // Admin response
+  adminReply     String?  @db.Text
+  adminRepliedAt DateTime?
+  adminEmail     String?
+  
+  // Resolution
+  resolvedAt     DateTime?
+  resolutionNote String?  @db.Text
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@index([ownerId])
+  @@index([ownerType])
+  @@index([status])
+  @@index([clinicId])
+  @@index([therapistId])
+  @@map("supports")
+}
+
+enum UserType {
+  CLINIC
+  THERAPIST
+}

@@ -1,0 +1,6 @@
+-- AlterTable
+ALTER TABLE "appointments" ALTER COLUMN "scheduledDate" DROP NOT NULL,
+ALTER COLUMN "scheduledTime" DROP NOT NULL,
+ALTER COLUMN "status" DROP NOT NULL,
+ALTER COLUMN "createdAt" DROP NOT NULL,
+ALTER COLUMN "updatedAt" DROP NOT NULL;
