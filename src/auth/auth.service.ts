@@ -11,14 +11,16 @@ import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { ConfigService } from '@nestjs/config';
 import { randomBytes } from 'crypto';
+import Stripe from 'stripe';
 
 @Injectable()
 export class AuthService {
+  private stripe: Stripe;
   constructor(
     private prisma: PrismaService,
     private jwtService: JwtService,
     private configService: ConfigService,
-  ) {}
+  ) { }
 
   /**
    * Register a new private clinic
@@ -36,6 +38,24 @@ export class AuthService {
     // Hash password
     const hashedPassword = await bcrypt.hash(dto.password, 10);
 
+    // Stripe customer creation
+    let stripeCustomerId: string;
+    try {
+      const stripeCustomer = await this.stripe.customers.create({
+        email: dto.email,
+        name: dto.fullName,
+        phone: dto.phone,
+        metadata: {
+          userType: 'CLINIC',
+          practiceName: dto.privatePracticeName
+        }
+      })
+      stripeCustomerId = stripeCustomer.id;
+    }
+    catch (error) {
+      throw new BadRequestException('Error creating Stripe customer');
+    }
+
     // Create clinic
     const clinic = await this.prisma.privateClinic.create({
       data: {
@@ -44,6 +64,7 @@ export class AuthService {
         phone: dto.phone,
         email: dto.email,
         password: hashedPassword,
+        stripeCustomerId
       },
       select: {
         id: true,
@@ -51,6 +72,7 @@ export class AuthService {
         fullName: true,
         privatePracticeName: true,
         phone: true,
+        stripeCustomerId: true,
         createdAt: true,
       },
     });
@@ -92,6 +114,24 @@ export class AuthService {
     // Hash password
     const hashedPassword = await bcrypt.hash(dto.password, 10);
 
+    let stripeCustomerId: string;
+    try {
+      const stripeCustomer = await this.stripe.customers.create({
+        email: dto.email,
+        name: dto.fullName,
+        phone: dto.phone,
+        metadata: {
+          userType: 'THERAPIST',
+          licenseNumber: dto.licenseNumber || 'N/A',
+          speciality: dto.speciality || 'N/A',
+          ...(dto.clinicId && { clinicId: dto.clinicId }),
+        },
+      });
+      stripeCustomerId = stripeCustomer.id;
+    } catch (error) {
+      throw new BadRequestException(`Failed to create Stripe customer: ${error.message}`);
+    }
+
     // Create therapist
     const therapist = await this.prisma.therapist.create({
       data: {
@@ -105,6 +145,7 @@ export class AuthService {
         timeZone: dto.timeZone,
         clinicId: dto.clinicId,
         password: hashedPassword,
+        stripeCustomerId
       },
       select: {
         id: true,
@@ -116,6 +157,7 @@ export class AuthService {
         speciality: true,
         clinicId: true,
         createdAt: true,
+        stripeCustomerId: true,
       },
     });
 
@@ -145,6 +187,7 @@ export class AuthService {
           fullName: true,
           privatePracticeName: true,
           password: true,
+          stripeCustomerId: true,
         },
       });
     } else if (userType === 'THERAPIST') {
@@ -156,6 +199,7 @@ export class AuthService {
           fullName: true,
           password: true,
           clinicId: true,
+          stripeCustomerId: true,
         },
       });
     }
@@ -272,7 +316,7 @@ export class AuthService {
 
     // Generate reset token (in production, save this to database with expiry)
     const resetToken = randomBytes(32).toString('hex');
-    
+
     // TODO: Send email with reset token
     // await this.emailService.sendPasswordResetEmail(user.email, resetToken);
 
@@ -285,7 +329,7 @@ export class AuthService {
   async resetPassword(dto: ResetPasswordDto) {
     // TODO: Verify token from database and check expiry
     // This is a simplified version
-    
+
     // Hash new password
     const hashedPassword = await bcrypt.hash(dto.newPassword, 10);
 
@@ -337,6 +381,7 @@ export class AuthService {
           subscriptionPlan: true,
           createdAt: true,
           updatedAt: true,
+          stripeCustomerId: true,
         },
       });
 
@@ -368,6 +413,7 @@ export class AuthService {
             },
           },
           subscriptionPlan: true,
+          stripeCustomerId: true,
           createdAt: true,
           updatedAt: true,
         },

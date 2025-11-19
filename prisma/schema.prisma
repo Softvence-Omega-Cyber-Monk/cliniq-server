@@ -21,10 +21,15 @@ model PrivateClinic {
 
   subscriptionPlanId String?
   subscriptionPlan   SubscriptionPlan? @relation(fields: [subscriptionPlanId], references: [id])
-  invoices           Invoice[]         @relation("ClinicInvoice")
-  therapists         Therapist[]
-  clients            Client[]
-  supportTickets     Support[]         @relation("ClinicSupport")
+
+  subscriptions Subscription[]
+  payments      Payment[]
+
+  invoices         Invoice[]   @relation("ClinicInvoice")
+  therapists       Therapist[]
+  clients          Client[]
+  supportTickets   Support[]   @relation("ClinicSupport")
+  stripeCustomerId String?     @unique
 
   paymentMethods PaymentMethod[] @relation("ClinicPayment")
 
@@ -45,12 +50,16 @@ model Therapist {
   availabilityStartTime  DateTime?
   availabilityEndTime    DateTime?
   password               String
+  stripeCustomerId       String?   @unique
 
   clinicId String?
   clinic   PrivateClinic? @relation(fields: [clinicId], references: [id])
 
   subscriptionPlanId String?
   subscriptionPlan   SubscriptionPlan? @relation(fields: [subscriptionPlanId], references: [id])
+
+  subscriptions Subscription[]
+  payments      Payment[]
 
   paymentMethods PaymentMethod[] @relation("TherapistPayment")
   invoices       Invoice[]       @relation("TherapistInvoice")
@@ -60,38 +69,6 @@ model Therapist {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-}
-
-model PaymentMethod {
-  id        String   @id @default(uuid())
-  ownerType UserType
-  ownerId   String
-
-  clinicId String?
-  clinic   PrivateClinic? @relation("ClinicPayment", fields: [clinicId], references: [id])
-
-  therapistId String?
-  therapist   Therapist? @relation("TherapistPayment", fields: [therapistId], references: [id])
-
-  cardholderName String
-  cardNumber     String
-  expiryDate     DateTime
-  cvv            String
-  cardEntity     String
-  createdAt      DateTime @default(now())
-}
-
-model SubscriptionPlan {
-  id        String    @id @default(uuid())
-  planName  String
-  price     Float
-  duration  Int
-  features  String
-  createdAt DateTime  @default(now())
-  expiredAt DateTime?
-
-  clinics    PrivateClinic[]
-  therapists Therapist[]
 }
 
 model Invoice {
@@ -147,7 +124,7 @@ model Appointment {
 
   // Scheduling
   scheduledDate DateTime
-  scheduledTime String   // Stored as "HH:MM" format
+  scheduledTime String // Stored as "HH:MM" format
   duration      Int      @default(60) // in minutes
 
   // Session details
@@ -184,24 +161,24 @@ model Support {
   therapistId String?
   therapist   Therapist? @relation("TherapistSupport", fields: [therapistId], references: [id])
 
-  subject   String
-  message   String   @db.Text
-  
+  subject String
+  message String @db.Text
+
   // Status and Reply fields
-  status    String   @default("open") // open, in-progress, resolved, closed
-  
+  status String @default("open") // open, in-progress, resolved, closed
+
   // Admin response
-  adminReply     String?  @db.Text
+  adminReply     String?   @db.Text
   adminRepliedAt DateTime?
   adminEmail     String?
-  
+
   // Resolution
   resolvedAt     DateTime?
-  resolutionNote String?  @db.Text
-  
+  resolutionNote String?   @db.Text
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  
+
   @@index([ownerId])
   @@index([ownerType])
   @@index([status])
@@ -213,4 +190,143 @@ model Support {
 enum UserType {
   CLINIC
   THERAPIST
+}
+
+model PaymentMethod {
+  id                    String @id @default(uuid())
+  stripePaymentMethodId String @unique
+  stripeCustomerId      String
+
+  cardHolderName String
+  cardLast4      String @db.VarChar(4)
+  cardBrand      String
+  expiryMonth    String @db.VarChar(2)
+  expiryYear     String @db.VarChar(4)
+
+  billingAddressLine1 String
+  billingAddressLine2 String?
+  billingCity         String
+  billingState        String
+  billingPostalCode   String
+  billingCountry      String
+
+  isDefault Boolean @default(false)
+
+  clinicId String?
+  clinic   PrivateClinic? @relation("ClinicPayment", fields: [clinicId], references: [id], onDelete: Cascade)
+
+  therapistId String?
+  therapist   Therapist? @relation("TherapistPayment", fields: [therapistId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([clinicId])
+  @@index([therapistId])
+}
+
+model SubscriptionPlan {
+  id       String @id @default(uuid())
+  planName String
+  price    Float
+  duration Int // your custom field
+  features String // your custom field
+
+  // Stripe price ID (optional)
+  stripePriceId String? @unique
+
+  clinics       PrivateClinic[]
+  therapists    Therapist[]
+  subscriptions Subscription[]
+
+  createdAt DateTime  @default(now())
+  expiredAt DateTime?
+  updatedAt DateTime  @updatedAt
+}
+
+model Subscription {
+  id String @id @default(uuid())
+
+  // Stripe subscription
+  stripeSubscriptionId String @unique
+
+  // Plan
+  subscriptionPlanId String
+  subscriptionPlan   SubscriptionPlan @relation(fields: [subscriptionPlanId], references: [id])
+
+  // Status
+  status SubscriptionStatus @default(active)
+
+  // Period
+  currentPeriodStart DateTime
+  currentPeriodEnd   DateTime
+
+  // Cancellation
+  cancelAtPeriodEnd Boolean   @default(false)
+  canceledAt        DateTime?
+
+  // Owner: clinic OR therapist
+  clinicId String?
+  clinic   PrivateClinic? @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+
+  therapistId String?
+  therapist   Therapist? @relation(fields: [therapistId], references: [id], onDelete: Cascade)
+
+  payments Payment[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([clinicId])
+  @@index([therapistId])
+}
+
+model Payment {
+  id String @id @default(uuid())
+
+  subscriptionId String
+  subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  stripeSubscriptionId  String
+  stripePaymentIntentId String  @unique
+  stripeChargeId        String?
+
+  amount      Float
+  currency    String        @default("usd")
+  status      PaymentStatus @default(pending)
+  description String?
+
+  // stored metadata (safe)
+  paymentMethodLast4 String
+  paymentMethodBrand String
+  paymentType        String @default("subscription")
+
+  paidAt DateTime
+
+  clinicId String?
+  clinic   PrivateClinic? @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+
+  therapistId String?
+  therapist   Therapist? @relation(fields: [therapistId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum SubscriptionStatus {
+  active
+  canceled
+  past_due
+  trialing
+  incomplete
+  incomplete_expired
+  unpaid
+}
+
+enum PaymentStatus {
+  succeeded
+  pending
+  failed
+  canceled
+  refunded
 }
