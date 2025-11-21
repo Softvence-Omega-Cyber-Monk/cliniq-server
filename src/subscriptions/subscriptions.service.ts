@@ -20,8 +20,8 @@ export class SubscriptionsService {
     private prisma: PrismaService,
     private configService: ConfigService,
   ) {
-    this.stripe = new Stripe(this.configService.get('STRIPE_SECRET_KEY'), {
-      apiVersion: '2024-11-20.acacia',
+    this.stripe = new Stripe(this.configService.get<string>('STRIPE_SECRET_KEY') || '', {
+      apiVersion: '2025-11-17.clover',
     });
   }
 
@@ -122,10 +122,10 @@ export class SubscriptionsService {
         stripeSubscriptionId: stripeSubscription.id,
         subscriptionPlanId: plan.id,
         ...(userType === 'CLINIC' ? { clinicId: userId } : { therapistId: userId }),
-        status: stripeSubscription.status,
-        currentPeriodStart: new Date(stripeSubscription.current_period_start * 1000),
-        currentPeriodEnd: new Date(stripeSubscription.current_period_end * 1000),
-        cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end,
+        status: stripeSubscription.status as any,
+        currentPeriodStart: new Date((stripeSubscription as any).current_period_start * 1000),
+        currentPeriodEnd: new Date((stripeSubscription as any).current_period_end * 1000),
+        cancelAtPeriodEnd: (stripeSubscription as any).cancel_at_period_end,
       },
       include: {
         subscriptionPlan: true,
@@ -133,19 +133,19 @@ export class SubscriptionsService {
     });
 
     // Save payment record if payment was successful
-    const invoice = stripeSubscription.latest_invoice as Stripe.Invoice;
+    const invoice = (stripeSubscription as any).latest_invoice as any;
     if (invoice && invoice.payment_intent) {
-      const paymentIntent = invoice.payment_intent as Stripe.PaymentIntent;
+      const paymentIntent = invoice.payment_intent as any;
       
       if (paymentIntent.status === 'succeeded') {
-        const charge = paymentIntent.charges.data[0];
+        const charge = paymentIntent.charges?.data?.[0];
         
         await this.prisma.payment.create({
           data: {
             subscriptionId: subscription.id,
             stripeSubscriptionId: stripeSubscription.id,
             stripePaymentIntentId: paymentIntent.id,
-            stripeChargeId: charge?.id,
+            stripeChargeId: charge?.id || null,
             amount: paymentIntent.amount / 100, // Convert from cents
             currency: paymentIntent.currency,
             status: 'succeeded',
@@ -252,28 +252,47 @@ export class SubscriptionsService {
   ) {
     const subscription = await this.getCurrentSubscription(userId, userType);
 
-    // Cancel in Stripe
-    const stripeSubscription = await this.stripe.subscriptions.update(
-      subscription.stripeSubscriptionId,
-      {
-        cancel_at_period_end: !dto.cancelImmediately,
-        ...(dto.cancelImmediately && { cancel_at: 'now' as any }),
-      },
-    );
+    if (dto.cancelImmediately) {
+      // For immediate cancellation, we need to use the cancel method instead
+      await this.stripe.subscriptions.cancel(subscription.stripeSubscriptionId);
+      
+      // Update in database
+      const updatedSubscription = await this.prisma.subscription.update({
+        where: { id: subscription.id },
+        data: {
+          status: 'canceled',
+          cancelAtPeriodEnd: false,
+          canceledAt: new Date(),
+        },
+        include: {
+          subscriptionPlan: true,
+        },
+      });
 
-    // Update in database
-    const updatedSubscription = await this.prisma.subscription.update({
-      where: { id: subscription.id },
-      data: {
-        status: dto.cancelImmediately ? 'canceled' : stripeSubscription.status,
-        cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end,
-      },
-      include: {
-        subscriptionPlan: true,
-      },
-    });
+      return updatedSubscription;
+    } else {
+      // Schedule cancellation at period end
+      const stripeSubscription = await this.stripe.subscriptions.update(
+        subscription.stripeSubscriptionId,
+        {
+          cancel_at_period_end: true,
+        },
+      );
 
-    return updatedSubscription;
+      // Update in database
+      const updatedSubscription = await this.prisma.subscription.update({
+        where: { id: subscription.id },
+        data: {
+          status: (stripeSubscription as any).status as any,
+          cancelAtPeriodEnd: (stripeSubscription as any).cancel_at_period_end,
+        },
+        include: {
+          subscriptionPlan: true,
+        },
+      });
+
+      return updatedSubscription;
+    }
   }
 
   /**

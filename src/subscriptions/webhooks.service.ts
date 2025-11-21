@@ -14,10 +14,10 @@ export class WebhooksService {
     private prisma: PrismaService,
     private configService: ConfigService,
   ) {
-    this.stripe = new Stripe(this.configService.get('STRIPE_SECRET_KEY'), {
-      apiVersion: '2024-11-20.acacia',
+    this.stripe = new Stripe(this.configService.get<string>('STRIPE_SECRET_KEY') || '', {
+      apiVersion: '2025-11-17.clover',
     });
-    this.webhookSecret = this.configService.get('STRIPE_WEBHOOK_SECRET');
+    this.webhookSecret = this.configService.get<string>('STRIPE_WEBHOOK_SECRET') || '';
   }
 
   async handleStripeWebhook(signature: string, rawBody: any) {
@@ -30,7 +30,7 @@ export class WebhooksService {
         signature,
         this.webhookSecret,
       );
-    } catch (err) {
+    } catch (err: any) {
       this.logger.error(`Webhook signature verification failed: ${err.message}`);
       throw new BadRequestException('Invalid signature');
     }
@@ -63,7 +63,7 @@ export class WebhooksService {
         default:
           this.logger.log(`Unhandled event type: ${event.type}`);
       }
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Error processing webhook: ${error.message}`);
       throw error;
     }
@@ -77,12 +77,14 @@ export class WebhooksService {
   private async handleInvoicePaymentSucceeded(invoice: Stripe.Invoice) {
     this.logger.log(`Processing payment success for invoice: ${invoice.id}`);
 
-    if (!invoice.subscription) {
+    const invoiceAny = invoice as any;
+
+    if (!invoiceAny.subscription) {
       return;
     }
 
-    const subscriptionId = invoice.subscription as string;
-    const paymentIntent = invoice.payment_intent as Stripe.PaymentIntent;
+    const subscriptionId = invoiceAny.subscription as string;
+    const paymentIntent = invoiceAny.payment_intent as any;
 
     // Get subscription from database
     const subscription = await this.prisma.subscription.findUnique({
@@ -106,8 +108,13 @@ export class WebhooksService {
     }
 
     // Get payment method details
-    const charge = invoice.charge as Stripe.Charge;
+    const charge = invoiceAny.charge as any;
     const paymentMethodDetails = charge?.payment_method_details;
+
+    // Get paid_at timestamp safely
+    const paidAt = invoiceAny.status_transitions?.paid_at 
+      ? new Date(invoiceAny.status_transitions.paid_at * 1000)
+      : new Date();
 
     // Create payment record
     await this.prisma.payment.create({
@@ -115,15 +122,15 @@ export class WebhooksService {
         subscriptionId: subscription.id,
         stripeSubscriptionId: subscriptionId,
         stripePaymentIntentId: paymentIntent.id,
-        stripeChargeId: charge?.id,
-        amount: invoice.amount_paid / 100, // Convert from cents
-        currency: invoice.currency,
+        stripeChargeId: charge?.id || null,
+        amount: invoiceAny.amount_paid / 100, // Convert from cents
+        currency: invoiceAny.currency,
         status: 'succeeded',
-        description: invoice.description || `${subscription.subscriptionPlan.planName} - Payment`,
+        description: invoiceAny.description || `${subscription.subscriptionPlan.planName} - Payment`,
         paymentMethodLast4: paymentMethodDetails?.card?.last4 || 'N/A',
         paymentMethodBrand: paymentMethodDetails?.card?.brand || 'N/A',
         paymentType: 'subscription',
-        paidAt: new Date(invoice.status_transitions.paid_at * 1000),
+        paidAt: paidAt,
         ...(subscription.clinicId ? { clinicId: subscription.clinicId } : {}),
         ...(subscription.therapistId ? { therapistId: subscription.therapistId } : {}),
       },
@@ -138,11 +145,13 @@ export class WebhooksService {
   private async handleInvoicePaymentFailed(invoice: Stripe.Invoice) {
     this.logger.log(`Processing payment failure for invoice: ${invoice.id}`);
 
-    if (!invoice.subscription) {
+    const invoiceAny = invoice as any;
+
+    if (!invoiceAny.subscription) {
       return;
     }
 
-    const subscriptionId = invoice.subscription as string;
+    const subscriptionId = invoiceAny.subscription as string;
 
     // Update subscription status
     await this.prisma.subscription.updateMany({
@@ -161,15 +170,17 @@ export class WebhooksService {
   private async handleSubscriptionUpdated(stripeSubscription: Stripe.Subscription) {
     this.logger.log(`Processing subscription update: ${stripeSubscription.id}`);
 
+    const subscriptionAny = stripeSubscription as any;
+
     await this.prisma.subscription.updateMany({
       where: { stripeSubscriptionId: stripeSubscription.id },
       data: {
-        status: stripeSubscription.status as any,
-        currentPeriodStart: new Date(stripeSubscription.current_period_start * 1000),
-        currentPeriodEnd: new Date(stripeSubscription.current_period_end * 1000),
-        cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end,
-        ...(stripeSubscription.canceled_at && {
-          canceledAt: new Date(stripeSubscription.canceled_at * 1000),
+        status: subscriptionAny.status as any,
+        currentPeriodStart: new Date(subscriptionAny.current_period_start * 1000),
+        currentPeriodEnd: new Date(subscriptionAny.current_period_end * 1000),
+        cancelAtPeriodEnd: subscriptionAny.cancel_at_period_end,
+        ...(subscriptionAny.canceled_at && {
+          canceledAt: new Date(subscriptionAny.canceled_at * 1000),
         }),
       },
     });

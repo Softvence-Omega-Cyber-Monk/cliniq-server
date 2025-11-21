@@ -8,6 +8,8 @@ import { TherapistsModule } from './therapists/therapists.module';
 import { ClientsModule } from './clients/clients.module';
 import { AppointmentsModule } from './appointments/appointments.module';
 import { ReportsModule } from './reports/reports.module';
+import { SubscriptionsModule } from './subscriptions/subscriptions.module';
+import { PaymentMethodsModule } from './paymentMethod/payment-methods.module';
 
 @Module({
   imports: [
@@ -20,7 +22,9 @@ import { ReportsModule } from './reports/reports.module';
     TherapistsModule,
     ClientsModule,
     AppointmentsModule,
-    ReportsModule 
+    ReportsModule ,
+    SubscriptionsModule,
+    PaymentMethodsModule
   ],
 })
 export class AppModule {}

@@ -20,7 +20,15 @@ export class AuthService {
     private prisma: PrismaService,
     private jwtService: JwtService,
     private configService: ConfigService,
-  ) { }
+  ) {
+    const stripeSecretKey = this.configService.get<string>('STRIPE_SECRET_KEY');
+    if (!stripeSecretKey) {
+      throw new Error('STRIPE_SECRET_KEY is not defined in environment variables')
+    }
+    this.stripe = new Stripe(stripeSecretKey, {
+      apiVersion: '2025-11-17.clover',
+    });
+  }
 
   /**
    * Register a new private clinic
@@ -53,6 +61,7 @@ export class AuthService {
       stripeCustomerId = stripeCustomer.id;
     }
     catch (error) {
+      console.log(error)
       throw new BadRequestException('Error creating Stripe customer');
     }
 
