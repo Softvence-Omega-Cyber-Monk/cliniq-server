@@ -26,6 +26,7 @@ import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { AuthResponseDto } from './dto/auth-response.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { RegisterIndividualTherapistDto } from './dto/register-individual-therapist.dto';
 
 @ApiTags('Authentication')
 @Controller('auth')
@@ -82,6 +83,30 @@ export class AuthController {
   @ApiBody({ type: RegisterTherapistDto })
   async registerTherapist(@Body() dto: RegisterTherapistDto) {
     return this.authService.registerTherapist(dto);
+  }
+
+  @Post('register/individual-therapist')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({
+    summary: 'Register a new individual therapist',
+    description: 'Create a new individual therapist account. Individual therapists can manage their own clients and subscriptions.',
+  })
+  @ApiResponse({
+    status: 201,
+    description: 'Individual therapist registered successfully',
+    type: AuthResponseDto,
+  })
+  @ApiResponse({
+    status: 409,
+    description: 'Email already registered',
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Validation error',
+  })
+  @ApiBody({ type: RegisterIndividualTherapistDto })
+  async registerIndividualTherapist(@Body() dto: RegisterIndividualTherapistDto) {
+    return this.authService.registerIndividualTherapist(dto);
   }
 
   @Post('login')

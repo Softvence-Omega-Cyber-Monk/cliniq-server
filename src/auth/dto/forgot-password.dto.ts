@@ -12,9 +12,9 @@ export class ForgotPasswordDto {
   @ApiProperty({
     description: 'User type (CLINIC or THERAPIST)',
     example: 'THERAPIST',
-    enum: ['CLINIC', 'THERAPIST'],
+    enum: ['ADMIN', 'INDIVIDUAL_THERAPIST','CLINIC', 'THERAPIST'],
   })
   @IsString()
   @IsNotEmpty()
-  userType: 'CLINIC' | 'THERAPIST';
+  userType: 'CLINIC' | 'THERAPIST'| 'ADMIN' | 'INDIVIDUAL_THERAPIST';
 }

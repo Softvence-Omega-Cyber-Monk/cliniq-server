@@ -18,20 +18,25 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   }
 
   async validate(payload: any) {
-    // Verify user still exists
-    if (payload.userType === 'CLINIC') {
+
+    if (payload.userType === 'ADMIN') {
+      const admin = await this.prisma.admin.findUnique({
+        where: { id: payload.sub },
+      });
+    }
+    else if (payload.userType === 'CLINIC') {
       const clinic = await this.prisma.privateClinic.findUnique({
         where: { id: payload.sub },
       });
-      
+
       if (!clinic) {
         throw new UnauthorizedException('User not found');
       }
-    } else if (payload.userType === 'THERAPIST') {
+    } else if (payload.userType === 'THERAPIST' || payload.userType === 'INDIVIDUAL_THERAPIST') {
       const therapist = await this.prisma.therapist.findUnique({
         where: { id: payload.sub },
       });
-      
+
       if (!therapist) {
         throw new UnauthorizedException('User not found');
       }

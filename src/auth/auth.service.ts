@@ -12,6 +12,9 @@ import { ResetPasswordDto } from './dto/reset-password.dto';
 import { ConfigService } from '@nestjs/config';
 import { randomBytes } from 'crypto';
 import Stripe from 'stripe';
+import { RegisterIndividualTherapistDto } from './dto/register-individual-therapist.dto';
+import { RegisterAdminDto } from './dto/register-admin.dto';
+import { UpdateAdminDto } from './dto/update-admin-dto';
 
 @Injectable()
 export class AuthService {
@@ -28,6 +31,49 @@ export class AuthService {
     this.stripe = new Stripe(stripeSecretKey, {
       apiVersion: '2025-11-17.clover',
     });
+  }
+
+  /**
+   * Register a new admin
+   */
+  async registerAdmin(dto: RegisterAdminDto) {
+    // Check if email already exists
+    const existingAdmin = await this.prisma.admin.findUnique({
+      where: { email: dto.email },
+    });
+
+    if (existingAdmin) {
+      throw new ConflictException('Email already registered');
+    }
+
+    // Hash password
+    const hashedPassword = await bcrypt.hash(dto.password, 10);
+
+    // Create admin (no Stripe customer for admin)
+    const admin = await this.prisma.admin.create({
+      data: {
+        fullName: dto.fullName,
+        email: dto.email,
+        phone: dto.phone,
+        password: hashedPassword,
+      },
+      select: {
+        id: true,
+        email: true,
+        fullName: true,
+        phone: true,
+        createdAt: true,
+      },
+    });
+
+    // Generate tokens
+    const tokens = await this.generateTokens(admin.id, admin.email, 'ADMIN');
+
+    return {
+      ...tokens,
+      user: admin,
+      userType: 'ADMIN',
+    };
   }
 
   /**
@@ -96,11 +142,7 @@ export class AuthService {
     };
   }
 
-  /**
-   * Register a new therapist (individual or under a clinic)
-   */
   async registerTherapist(dto: RegisterTherapistDto) {
-    // Check if email already exists
     const existingTherapist = await this.prisma.therapist.findUnique({
       where: { email: dto.email },
     });
@@ -108,8 +150,6 @@ export class AuthService {
     if (existingTherapist) {
       throw new ConflictException('Email already registered');
     }
-
-    // If clinicId provided, verify clinic exists
     if (dto.clinicId) {
       const clinic = await this.prisma.privateClinic.findUnique({
         where: { id: dto.clinicId },
@@ -119,10 +159,7 @@ export class AuthService {
         throw new NotFoundException('Clinic not found');
       }
     }
-
-    // Hash password
     const hashedPassword = await bcrypt.hash(dto.password, 10);
-
     let stripeCustomerId: string;
     try {
       const stripeCustomer = await this.stripe.customers.create({
@@ -140,8 +177,6 @@ export class AuthService {
     } catch (error) {
       throw new BadRequestException(`Failed to create Stripe customer: ${error.message}`);
     }
-
-    // Create therapist
     const therapist = await this.prisma.therapist.create({
       data: {
         fullName: dto.fullName,
@@ -169,14 +204,79 @@ export class AuthService {
         stripeCustomerId: true,
       },
     });
-
-    // Generate tokens
     const tokens = await this.generateTokens(therapist.id, therapist.email, 'THERAPIST');
-
     return {
       ...tokens,
       user: therapist,
       userType: 'THERAPIST',
+    };
+  }
+
+  async registerIndividualTherapist(dto: RegisterIndividualTherapistDto) {
+    // Check if email already exists
+    const existingTherapist = await this.prisma.therapist.findUnique({
+      where: { email: dto.email },
+    });
+
+    if (existingTherapist) {
+      throw new ConflictException('Email already registered');
+    }
+
+    // Hash password
+    const hashedPassword = await bcrypt.hash(dto.password, 10);
+
+    let stripeCustomerId: string;
+    try {
+      const stripeCustomer = await this.stripe.customers.create({
+        email: dto.email,
+        name: dto.fullName,
+        phone: dto.phone,
+        metadata: {
+          userType: 'INDIVIDUAL_THERAPIST',
+          licenseNumber: dto.licenseNumber || 'N/A',
+          speciality: dto.speciality || 'N/A',
+        },
+      });
+      stripeCustomerId = stripeCustomer.id;
+    } catch (error) {
+      throw new BadRequestException(`Failed to create Stripe customer: ${error.message}`);
+    }
+
+    // Create therapist
+    const individualTherapist = await this.prisma.therapist.create({
+      data: {
+        fullName: dto.fullName,
+        licenseNumber: dto.licenseNumber,
+        qualification: dto.qualification,
+        email: dto.email,
+        phone: dto.phone,
+        speciality: dto.speciality,
+        defaultSessionDuration: dto.defaultSessionDuration,
+        timeZone: dto.timeZone,
+        password: hashedPassword,
+        stripeCustomerId
+      },
+      select: {
+        id: true,
+        email: true,
+        fullName: true,
+        licenseNumber: true,
+        qualification: true,
+        phone: true,
+        speciality: true,
+        clinicId: true,
+        createdAt: true,
+        stripeCustomerId: true,
+      },
+    });
+
+    // Generate tokens
+    const tokens = await this.generateTokens(individualTherapist.id, individualTherapist.email, 'INDIVIDUAL_THERAPIST');
+
+    return {
+      ...tokens,
+      user: individualTherapist,
+      userType: 'INDIVIDUAL_THERAPIST',
     };
   }
 
@@ -187,7 +287,19 @@ export class AuthService {
     let user;
     let userType = dto.userType;
 
-    if (userType === 'CLINIC') {
+    if (userType === 'ADMIN') {
+      user = await this.prisma.admin.findUnique({
+        where: { email: dto.email },
+        select: {
+          id: true,
+          email: true,
+          fullName: true,
+          phone: true,
+          password: true,
+        },
+      });
+    }
+    else if (userType === 'CLINIC') {
       user = await this.prisma.privateClinic.findUnique({
         where: { email: dto.email },
         select: {
@@ -199,7 +311,7 @@ export class AuthService {
           stripeCustomerId: true,
         },
       });
-    } else if (userType === 'THERAPIST') {
+    } else if (userType === 'THERAPIST' || userType === 'INDIVIDUAL_THERAPIST') {
       user = await this.prisma.therapist.findUnique({
         where: { email: dto.email },
         select: {
@@ -303,12 +415,64 @@ export class AuthService {
   }
 
   /**
+   * Update admin profile
+   */
+  async updateAdminProfile(adminId: string, dto: UpdateAdminDto) {
+    const admin = await this.prisma.admin.findUnique({
+      where: { id: adminId },
+    });
+
+    if (!admin) {
+      throw new NotFoundException('Admin not found');
+    }
+
+    // Check if email is being changed and if it already exists
+    if (dto.email && dto.email !== admin.email) {
+      const existingAdmin = await this.prisma.admin.findUnique({
+        where: { email: dto.email },
+      });
+
+      if (existingAdmin) {
+        throw new ConflictException('Email already in use');
+      }
+    }
+
+    // Update admin
+    const updatedAdmin = await this.prisma.admin.update({
+      where: { id: adminId },
+      data: {
+        ...(dto.fullName && { fullName: dto.fullName }),
+        ...(dto.email && { email: dto.email }),
+        ...(dto.phone && { phone: dto.phone }),
+      },
+      select: {
+        id: true,
+        email: true,
+        fullName: true,
+        phone: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    return {
+      message: 'Profile updated successfully',
+      user: updatedAdmin,
+    };
+  }
+
+  /**
    * Request password reset
    */
   async forgotPassword(dto: ForgotPasswordDto) {
     let user;
 
-    if (dto.userType === 'CLINIC') {
+    if (dto.userType === 'ADMIN') {
+      user = await this.prisma.admin.findUnique({
+        where: { email: dto.email },
+      });
+    }
+    else if (dto.userType === 'CLINIC') {
       user = await this.prisma.privateClinic.findUnique({
         where: { email: dto.email },
       });
@@ -375,7 +539,25 @@ export class AuthService {
    * Get user profile
    */
   async getProfile(userId: string, userType: string) {
-    if (userType === 'CLINIC') {
+    if (userType === 'ADMIN') {
+      const admin = await this.prisma.admin.findUnique({
+        where: { id: userId },
+        select: {
+          id: true,
+          fullName: true,
+          email: true,
+          phone: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      });
+      if (!admin) {
+        throw new NotFoundException('Admin not found');
+      }
+
+      return { user: admin, userType: 'ADMIN' };
+    }
+    else if (userType === 'CLINIC') {
       const clinic = await this.prisma.privateClinic.findUnique({
         where: { id: userId },
         select: {

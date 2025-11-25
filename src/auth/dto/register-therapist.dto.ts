@@ -84,9 +84,9 @@ export class RegisterTherapistDto {
   @ApiProperty({
     description: 'Clinic ID if registering under a clinic',
     example: '123e4567-e89b-12d3-a456-426614174000',
-    required: false,
+    required: true,
   })
   @IsString()
   @IsOptional()
-  clinicId?: string;
+  clinicId: string;
 }

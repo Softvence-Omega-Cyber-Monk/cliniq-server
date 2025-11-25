@@ -15,7 +15,7 @@ export class AuthResponseDto {
   @ApiProperty({
     description: 'User type',
     example: 'THERAPIST',
-    enum: ['CLINIC', 'THERAPIST'],
+    enum: ['ADMIN','CLINIC', 'THERAPIST', 'INDIVIDUAL_THERAPIST'],
   })
   userType: string;
 
