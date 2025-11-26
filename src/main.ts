@@ -2,13 +2,18 @@ import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { AppModule } from './app.module';
+import { json } from 'express';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
   // Enable CORS
   app.enableCors();
-
+  app.use('/webhooks/stripe', json({
+    verify: (req: any, res, buf) => {
+      req.rawBody = buf;
+    }
+  }));
   // Global validation pipe
   app.useGlobalPipes(
     new ValidationPipe({
@@ -17,6 +22,8 @@ async function bootstrap() {
       forbidNonWhitelisted: false, // Don't throw error for extra properties (for multipart/form-data)
     }),
   );
+
+
 
   // Swagger configuration
   const config = new DocumentBuilder()
@@ -52,7 +59,7 @@ async function bootstrap() {
 
   const port = process.env.PORT || 3000;
   await app.listen(port);
-  
+
   console.log(`🚀 Application is running on: http://localhost:${port}`);
   console.log(`📚 Swagger documentation: http://localhost:${port}/api-docs`);
 }

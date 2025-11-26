@@ -11,6 +11,7 @@ import Stripe from 'stripe';
 import { PurchaseSubscriptionDto } from './dto/purchase-subscription.dto';
 import { CancelSubscriptionDto } from './dto/cancel-subscription.dto';
 import { SubscriptionQueryParamsDto } from './dto/query-params.dto';
+import { UpgradeSubscriptionDto } from './dto/upgrade-subscription.dto';
 
 @Injectable()
 export class SubscriptionsService {
@@ -403,4 +404,406 @@ export class SubscriptionsService {
       return therapist;
     }
   }
+
+  // Add these methods to your subscriptions.service.ts
+
+/**
+ * Get all subscription plans (only non-expired)
+ */
+async getSubscriptionPlans() {
+  return this.prisma.subscriptionPlan.findMany({
+    where: { 
+      expiredAt: null, // Based on your schema, use null to filter active plans
+    },
+    orderBy: { price: 'asc' },
+    select: {
+      id: true,
+      planName: true,
+      price: true,
+      duration: true,
+      features: true,
+      stripePriceId: true,
+      createdAt: true,
+    },
+  });
+}
+
+/**
+ * Get subscription plan by ID
+ */
+async getSubscriptionPlanById(planId: string) {
+  const plan = await this.prisma.subscriptionPlan.findUnique({
+    where: { id: planId },
+  });
+
+  if (!plan) {
+    throw new NotFoundException('Subscription plan not found');
+  }
+
+  // Check if plan is expired
+  if (plan.expiredAt && plan.expiredAt < new Date()) {
+    throw new BadRequestException('Subscription plan has expired');
+  }
+
+  return plan;
+}
+
+/**
+ * Preview upgrade/downgrade with manual proration calculation
+ */
+async previewUpgrade(
+  userId: string,
+  userType: string,
+  newPlanId: string,
+) {
+  const currentSubscription = await this.getCurrentSubscription(userId, userType);
+  const newPlan = await this.getSubscriptionPlanById(newPlanId);
+
+  if (currentSubscription.subscriptionPlanId === newPlanId) {
+    throw new BadRequestException('Already subscribed to this plan');
+  }
+
+  const currentPlan = currentSubscription.subscriptionPlan;
+
+  // Calculate proration manually
+  const now = Date.now();
+  const periodEnd = currentSubscription.currentPeriodEnd.getTime();
+  const periodStart = currentSubscription.currentPeriodStart.getTime();
+  const totalPeriodDuration = periodEnd - periodStart;
+  const remainingTime = periodEnd - now;
+  
+  // Percentage of billing period remaining
+  const percentRemaining = remainingTime / totalPeriodDuration;
+
+  // Calculate amounts
+  const unusedAmount = currentPlan.price * percentRemaining;
+  const newProratedAmount = newPlan.price * percentRemaining;
+  const prorationAmount = newProratedAmount - unusedAmount;
+
+  // Determine if upgrade or downgrade
+  const isUpgrade = newPlan.price > currentPlan.price;
+  const isDowngrade = newPlan.price < currentPlan.price;
+
+  return {
+    currentPlan: {
+      id: currentPlan.id,
+      planName: currentPlan.planName,
+      price: currentPlan.price,
+    },
+    newPlan: {
+      id: newPlan.id,
+      planName: newPlan.planName,
+      price: newPlan.price,
+    },
+    prorationAmount: Number(Math.max(0, prorationAmount).toFixed(2)),
+    immediateCharge: Number(Math.max(0, prorationAmount).toFixed(2)),
+    nextBillingDate: currentSubscription.currentPeriodEnd,
+    currentPeriodEnd: currentSubscription.currentPeriodEnd,
+    daysRemaining: Math.ceil(remainingTime / (1000 * 60 * 60 * 24)),
+    percentRemaining: Number((percentRemaining * 100).toFixed(2)),
+    currency: 'usd',
+    isUpgrade,
+    isDowngrade,
+    message: isUpgrade 
+      ? `You will be charged $${Math.max(0, prorationAmount).toFixed(2)} immediately for the upgrade.`
+      : isDowngrade
+      ? `A credit of $${Math.abs(prorationAmount).toFixed(2)} will be applied to your next invoice.`
+      : 'No change in pricing.',
+  };
+}
+
+/**
+ * Reactivate canceled subscription
+ */
+async reactivateSubscription(userId: string, userType: string) {
+  const subscription = await this.prisma.subscription.findFirst({
+    where: {
+      ...(userType === 'CLINIC' ? { clinicId: userId } : { therapistId: userId }),
+      status: { in: ['active', 'trialing'] },
+    },
+    include: {
+      subscriptionPlan: true,
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  if (!subscription) {
+    throw new NotFoundException('No active subscription found');
+  }
+
+  if (!subscription.cancelAtPeriodEnd) {
+    throw new BadRequestException(
+      'Subscription is not scheduled for cancellation. It is already active.',
+    );
+  }
+
+  // Update in Stripe
+  const updatedStripeSubscription = await this.stripe.subscriptions.update(
+    subscription.stripeSubscriptionId,
+    { 
+      cancel_at_period_end: false,
+      metadata: {
+        reactivatedAt: new Date().toISOString(),
+      },
+    },
+  );
+
+  // Update in database
+  const updatedSubscription = await this.prisma.subscription.update({
+    where: { id: subscription.id },
+    data: {
+      cancelAtPeriodEnd: false,
+      status: updatedStripeSubscription.status as any,
+    },
+    include: {
+      subscriptionPlan: true,
+    },
+  });
+
+  return {
+    ...updatedSubscription,
+    message: 'Subscription reactivated successfully. It will continue after the current period.',
+  };
+}
+
+/**
+ * Get subscription status and capabilities
+ */
+async getSubscriptionStatus(userId: string, userType: string) {
+  // Check for active subscription
+  const activeSubscription = await this.prisma.subscription.findFirst({
+    where: {
+      ...(userType === 'CLINIC' ? { clinicId: userId } : { therapistId: userId }),
+      status: { in: ['active', 'trialing'] },
+    },
+    include: {
+      subscriptionPlan: true,
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  // Check for payment methods
+  const paymentMethods = await this.prisma.paymentMethod.findMany({
+    where: {
+      ...(userType === 'CLINIC' ? { clinicId: userId } : { therapistId: userId }),
+    },
+  });
+
+  // Check for default payment method
+  const defaultPaymentMethod = paymentMethods.find(pm => pm.isDefault);
+
+  return {
+    hasActiveSubscription: !!activeSubscription,
+    hasPaymentMethod: paymentMethods.length > 0,
+    hasDefaultPaymentMethod: !!defaultPaymentMethod,
+    paymentMethodsCount: paymentMethods.length,
+    subscription: activeSubscription ? {
+      id: activeSubscription.id,
+      planId: activeSubscription.subscriptionPlanId,
+      planName: activeSubscription.subscriptionPlan.planName,
+      price: activeSubscription.subscriptionPlan.price,
+      status: activeSubscription.status,
+      currentPeriodStart: activeSubscription.currentPeriodStart,
+      currentPeriodEnd: activeSubscription.currentPeriodEnd,
+      cancelAtPeriodEnd: activeSubscription.cancelAtPeriodEnd,
+      daysUntilRenewal: Math.ceil(
+        (activeSubscription.currentPeriodEnd.getTime() - Date.now()) / (1000 * 60 * 60 * 24)
+      ),
+    } : null,
+    capabilities: {
+      canPurchase: !activeSubscription && paymentMethods.length > 0,
+      canUpgrade: !!activeSubscription && !activeSubscription.cancelAtPeriodEnd,
+      canDowngrade: !!activeSubscription && !activeSubscription.cancelAtPeriodEnd,
+      canReactivate: activeSubscription?.cancelAtPeriodEnd || false,
+      canCancel: !!activeSubscription && !activeSubscription.cancelAtPeriodEnd,
+      needsPaymentMethod: paymentMethods.length === 0,
+    },
+    warnings: this.generateWarnings(activeSubscription, paymentMethods),
+  };
+}
+
+/**
+ * Helper: Generate warnings for subscription status
+ */
+private generateWarnings(
+  subscription: any,
+  paymentMethods: any[],
+): string[] {
+  const warnings: string[] = [];
+
+  if (!subscription) {
+    warnings.push('No active subscription. Please subscribe to a plan.');
+  }
+
+  if (paymentMethods.length === 0) {
+    warnings.push('No payment method on file. Add a payment method to continue.');
+  }
+
+  if (subscription?.cancelAtPeriodEnd) {
+    const daysRemaining = Math.ceil(
+      (subscription.currentPeriodEnd.getTime() - Date.now()) / (1000 * 60 * 60 * 24)
+    );
+    warnings.push(
+      `Subscription will be canceled in ${daysRemaining} days. Reactivate to continue service.`
+    );
+  }
+
+  if (subscription?.status === 'past_due') {
+    warnings.push('Payment failed. Please update your payment method to avoid service interruption.');
+  }
+
+  if (subscription?.status === 'unpaid') {
+    warnings.push('Subscription is unpaid. Service may be interrupted.');
+  }
+
+  if (!paymentMethods.find(pm => pm.isDefault)) {
+    warnings.push('No default payment method set. Please set a default payment method.');
+  }
+
+  return warnings;
+}
+
+/**
+ * Upgrade or downgrade subscription plan
+ */
+async upgradeOrDowngradeSubscription(
+  userId: string,
+  userType: string,
+  dto: UpgradeSubscriptionDto,
+) {
+  // Get current active subscription
+  const currentSubscription = await this.prisma.subscription.findFirst({
+    where: {
+      ...(userType === 'CLINIC' ? { clinicId: userId } : { therapistId: userId }),
+      status: { in: ['active', 'trialing'] },
+    },
+    include: {
+      subscriptionPlan: true,
+    },
+  });
+
+  if (!currentSubscription) {
+    throw new NotFoundException('No active subscription found to upgrade/downgrade');
+  }
+
+  // Get new subscription plan
+  const newPlan = await this.prisma.subscriptionPlan.findUnique({
+    where: { id: dto.newSubscriptionPlanId },
+  });
+
+  if (!newPlan) {
+    throw new NotFoundException('New subscription plan not found');
+  }
+
+  if (!newPlan.stripePriceId) {
+    throw new BadRequestException('New subscription plan does not have a Stripe price ID');
+  }
+
+  // Check if trying to switch to the same plan
+  if (currentSubscription.subscriptionPlanId === dto.newSubscriptionPlanId) {
+    throw new BadRequestException('Already subscribed to this plan');
+  }
+
+  // Get payment method if specified
+  let paymentMethodId: string | undefined;
+  if (dto.paymentMethodId) {
+    const paymentMethod = await this.prisma.paymentMethod.findUnique({
+      where: { id: dto.paymentMethodId },
+      select: { stripePaymentMethodId: true, clinicId: true, therapistId: true },
+    });
+
+    if (!paymentMethod) {
+      throw new NotFoundException('Payment method not found');
+    }
+
+    // Verify ownership
+    if (
+      (userType === 'CLINIC' && paymentMethod.clinicId !== userId) ||
+      (userType === 'THERAPIST' && paymentMethod.therapistId !== userId)
+    ) {
+      throw new BadRequestException('Payment method does not belong to user');
+    }
+
+    paymentMethodId = paymentMethod.stripePaymentMethodId;
+  }
+
+  // Get the Stripe subscription
+  const stripeSubscription = await this.stripe.subscriptions.retrieve(
+    currentSubscription.stripeSubscriptionId,
+  );
+
+  // Update the subscription in Stripe
+  const updatedStripeSubscription = await this.stripe.subscriptions.update(
+    currentSubscription.stripeSubscriptionId,
+    {
+      items: [
+        {
+          id: stripeSubscription.items.data[0].id,
+          price: newPlan.stripePriceId,
+        },
+      ],
+      proration_behavior: dto.prorationBehavior || 'create_prorations',
+      ...(paymentMethodId && { default_payment_method: paymentMethodId }),
+      metadata: {
+        userId,
+        userType,
+        planId: newPlan.id,
+        previousPlanId: currentSubscription.subscriptionPlanId,
+        upgradeDate: new Date().toISOString(),
+      },
+    },
+  );
+
+  // Update subscription in database
+  const updatedSubscription = await this.prisma.subscription.update({
+    where: { id: currentSubscription.id },
+    data: {
+      subscriptionPlanId: newPlan.id,
+      status: updatedStripeSubscription.status as any,
+      currentPeriodStart: new Date(
+        (updatedStripeSubscription as any).current_period_start * 1000,
+      ),
+      currentPeriodEnd: new Date(
+        (updatedStripeSubscription as any).current_period_end * 1000,
+      ),
+    },
+    include: {
+      subscriptionPlan: true,
+    },
+  });
+
+  // Update user's subscription plan reference
+  if (userType === 'CLINIC') {
+    await this.prisma.privateClinic.update({
+      where: { id: userId },
+      data: { subscriptionPlanId: newPlan.id },
+    });
+  } else {
+    await this.prisma.therapist.update({
+      where: { id: userId },
+      data: { subscriptionPlanId: newPlan.id },
+    });
+  }
+
+  return {
+    ...updatedSubscription,
+    message: this.getUpgradeMessage(
+      currentSubscription.subscriptionPlan.price,
+      newPlan.price,
+    ),
+  };
+}
+
+/**
+ * Helper method to generate upgrade/downgrade message
+ */
+private getUpgradeMessage(oldPrice: number, newPrice: number): string {
+  if (newPrice > oldPrice) {
+    return 'Subscription upgraded successfully. Prorated charges have been applied.';
+  } else if (newPrice < oldPrice) {
+    return 'Subscription downgraded successfully. Credit will be applied to your next invoice.';
+  } else {
+    return 'Subscription plan changed successfully.';
+  }
+}
 }

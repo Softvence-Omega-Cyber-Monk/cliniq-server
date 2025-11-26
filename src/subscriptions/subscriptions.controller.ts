@@ -26,6 +26,7 @@ import { CancelSubscriptionDto } from './dto/cancel-subscription.dto';
 import { SubscriptionResponseDto } from './dto/subscription-response.dto';
 import { PaymentHistoryResponseDto } from './dto/payment-history-response.dto';
 import { SubscriptionQueryParamsDto } from './dto/query-params.dto';
+import { UpgradeSubscriptionDto } from './dto/upgrade-subscription.dto';
 
 @ApiTags('Subscriptions')
 @ApiBearerAuth('bearer')
@@ -72,6 +73,261 @@ export class SubscriptionsController {
       dto,
     );
   }
+
+  @Get('plans')
+@ApiOperation({
+  summary: 'Get all available subscription plans',
+  description: 'Retrieve all active (non-expired) subscription plans available for purchase',
+})
+@ApiResponse({
+  status: 200,
+  description: 'Subscription plans retrieved successfully',
+  schema: {
+    type: 'array',
+    items: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', example: '123e4567-e89b-12d3-a456-426614174000' },
+        planName: { type: 'string', example: 'Professional Plan' },
+        price: { type: 'number', example: 99.99 },
+        duration: { type: 'number', example: 30 },
+        features: { type: 'string', example: 'Unlimited sessions, Priority support' },
+        stripePriceId: { type: 'string', example: 'price_1234567890' },
+        createdAt: { type: 'string', example: '2024-01-01T00:00:00.000Z' },
+      },
+    },
+  },
+})
+@ApiResponse({
+  status: 401,
+  description: 'Unauthorized',
+})
+async getSubscriptionPlans() {
+  return this.subscriptionsService.getSubscriptionPlans();
+}
+
+@Get('plans/:id')
+@ApiOperation({
+  summary: 'Get subscription plan by ID',
+  description: 'Retrieve details of a specific subscription plan',
+})
+@ApiParam({
+  name: 'id',
+  description: 'Subscription plan ID',
+  example: '123e4567-e89b-12d3-a456-426614174000',
+})
+@ApiResponse({
+  status: 200,
+  description: 'Subscription plan retrieved successfully',
+  schema: {
+    type: 'object',
+    properties: {
+      id: { type: 'string' },
+      planName: { type: 'string' },
+      price: { type: 'number' },
+      duration: { type: 'number' },
+      features: { type: 'string' },
+      stripePriceId: { type: 'string' },
+    },
+  },
+})
+@ApiResponse({
+  status: 404,
+  description: 'Subscription plan not found',
+})
+@ApiResponse({
+  status: 401,
+  description: 'Unauthorized',
+})
+async getSubscriptionPlanById(@Param('id') id: string) {
+  return this.subscriptionsService.getSubscriptionPlanById(id);
+}
+
+@Post('preview-upgrade')
+@HttpCode(HttpStatus.OK)
+@ApiOperation({
+  summary: 'Preview subscription upgrade/downgrade',
+  description: 'Calculate prorated amount and details for changing subscription plan before actual change',
+})
+@ApiResponse({
+  status: 200,
+  description: 'Preview calculated successfully',
+  schema: {
+    properties: {
+      currentPlan: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          planName: { type: 'string' },
+          price: { type: 'number' },
+        },
+      },
+      newPlan: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          planName: { type: 'string' },
+          price: { type: 'number' },
+        },
+      },
+      prorationAmount: { type: 'number', example: 25.50 },
+      immediateCharge: { type: 'number', example: 25.50 },
+      nextBillingDate: { type: 'string', example: '2024-02-01T00:00:00.000Z' },
+      currentPeriodEnd: { type: 'string' },
+      daysRemaining: { type: 'number', example: 15 },
+      percentRemaining: { type: 'number', example: 50.00 },
+      currency: { type: 'string', example: 'usd' },
+      isUpgrade: { type: 'boolean' },
+      isDowngrade: { type: 'boolean' },
+      message: { type: 'string' },
+    },
+  },
+})
+@ApiResponse({
+  status: 400,
+  description: 'Bad request - Already subscribed to this plan',
+})
+@ApiResponse({
+  status: 404,
+  description: 'No active subscription or plan not found',
+})
+@ApiResponse({
+  status: 401,
+  description: 'Unauthorized',
+})
+async previewUpgrade(
+  @Request() req,
+  @Body() dto: { newSubscriptionPlanId: string },
+) {
+  return this.subscriptionsService.previewUpgrade(
+    req.user.sub,
+    req.user.userType,
+    dto.newSubscriptionPlanId,
+  );
+}
+
+@Post('upgrade')
+@HttpCode(HttpStatus.OK)
+@ApiOperation({
+  summary: 'Upgrade or downgrade subscription',
+  description:
+    'Change the current subscription plan. Upgrading will prorate and charge immediately. Downgrading will apply credit to the next billing cycle.',
+})
+@ApiResponse({
+  status: 200,
+  description: 'Subscription upgraded/downgraded successfully',
+  type: SubscriptionResponseDto,
+})
+@ApiResponse({
+  status: 400,
+  description: 'Bad request - Invalid plan or already subscribed to this plan',
+})
+@ApiResponse({
+  status: 401,
+  description: 'Unauthorized',
+})
+@ApiResponse({
+  status: 404,
+  description: 'No active subscription or plan not found',
+})
+async upgradeSubscription(
+  @Request() req,
+  @Body() dto: UpgradeSubscriptionDto,
+) {
+  return this.subscriptionsService.upgradeOrDowngradeSubscription(
+    req.user.sub,
+    req.user.userType,
+    dto,
+  );
+}
+
+@Post('reactivate')
+@HttpCode(HttpStatus.OK)
+@ApiOperation({
+  summary: 'Reactivate canceled subscription',
+  description: 'Resume a subscription that was scheduled for cancellation at period end',
+})
+@ApiResponse({
+  status: 200,
+  description: 'Subscription reactivated successfully',
+  type: SubscriptionResponseDto,
+})
+@ApiResponse({
+  status: 400,
+  description: 'Subscription is not scheduled for cancellation',
+})
+@ApiResponse({
+  status: 404,
+  description: 'No active subscription found',
+})
+@ApiResponse({
+  status: 401,
+  description: 'Unauthorized',
+})
+async reactivateSubscription(@Request() req) {
+  return this.subscriptionsService.reactivateSubscription(
+    req.user.sub,
+    req.user.userType,
+  );
+}
+
+@Get('status')
+@ApiOperation({
+  summary: 'Check subscription status and capabilities',
+  description: 'Get comprehensive subscription status, payment methods, and user capabilities',
+})
+@ApiResponse({
+  status: 200,
+  description: 'Status retrieved successfully',
+  schema: {
+    properties: {
+      hasActiveSubscription: { type: 'boolean' },
+      hasPaymentMethod: { type: 'boolean' },
+      hasDefaultPaymentMethod: { type: 'boolean' },
+      paymentMethodsCount: { type: 'number' },
+      subscription: {
+        type: 'object',
+        nullable: true,
+        properties: {
+          id: { type: 'string' },
+          planId: { type: 'string' },
+          planName: { type: 'string' },
+          price: { type: 'number' },
+          status: { type: 'string' },
+          currentPeriodStart: { type: 'string' },
+          currentPeriodEnd: { type: 'string' },
+          cancelAtPeriodEnd: { type: 'boolean' },
+          daysUntilRenewal: { type: 'number' },
+        },
+      },
+      capabilities: {
+        type: 'object',
+        properties: {
+          canPurchase: { type: 'boolean' },
+          canUpgrade: { type: 'boolean' },
+          canDowngrade: { type: 'boolean' },
+          canReactivate: { type: 'boolean' },
+          canCancel: { type: 'boolean' },
+          needsPaymentMethod: { type: 'boolean' },
+        },
+      },
+      warnings: {
+        type: 'array',
+        items: { type: 'string' },
+      },
+    },
+  },
+})
+@ApiResponse({
+  status: 401,
+  description: 'Unauthorized',
+})
+async getSubscriptionStatus(@Request() req) {
+  return this.subscriptionsService.getSubscriptionStatus(
+    req.user.sub,
+    req.user.userType,
+  );
+}
 
   @Get('current')
   @ApiOperation({
