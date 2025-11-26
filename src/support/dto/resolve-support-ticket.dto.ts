@@ -1,14 +1,14 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { IsString, IsNotEmpty, MinLength } from 'class-validator';
 
-export class AdminReplyDto {
+export class ResolveSupportTicketDto {
   @ApiProperty({
-    description: 'Admin reply message',
-    example: 'Thank you for contacting us. We have investigated your billing issue and found that...',
+    description: 'Resolution notes',
+    example: 'Issue resolved: Refund processed for duplicate charge. User notified via email.',
     minLength: 10,
   })
   @IsString()
   @IsNotEmpty()
   @MinLength(10)
-  reply: string;
+  resolutionNote: string;
 }

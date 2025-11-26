@@ -8,6 +8,7 @@ import {
   UseGuards,
   Get,
   Request,
+  Patch,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -27,11 +28,40 @@ import { ResetPasswordDto } from './dto/reset-password.dto';
 import { AuthResponseDto } from './dto/auth-response.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { RegisterIndividualTherapistDto } from './dto/register-individual-therapist.dto';
+import { RegisterAdminDto } from './dto/register-admin.dto';
+import { UpdateAdminDto } from './dto/update-admin-dto';
+import { Roles } from './decorators/roles.decorator';
+import { RolesGuard } from './guards/roles.guard';
 
 @ApiTags('Authentication')
 @Controller('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
+
+  // FIX: Added missing admin registration endpoint
+  @Post('register/admin')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({
+    summary: 'Register a new admin',
+    description: 'Create a new admin account with full system access.',
+  })
+  @ApiResponse({
+    status: 201,
+    description: 'Admin registered successfully',
+    type: AuthResponseDto,
+  })
+  @ApiResponse({
+    status: 409,
+    description: 'Email already registered',
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Validation error',
+  })
+  @ApiBody({ type: RegisterAdminDto })
+  async registerAdmin(@Body() dto: RegisterAdminDto) {
+    return this.authService.registerAdmin(dto);
+  }
 
   @Post('register/clinic')
   @HttpCode(HttpStatus.CREATED)
@@ -163,7 +193,7 @@ export class AuthController {
   @ApiBearerAuth('bearer')
   @ApiOperation({
     summary: 'Get current user profile',
-    description: 'Retrieve profile information for the authenticated user (clinic or therapist).',
+    description: 'Retrieve profile information for the authenticated user (admin, clinic or therapist).',
   })
   @ApiResponse({
     status: 200,
@@ -171,7 +201,7 @@ export class AuthController {
     schema: {
       properties: {
         user: { type: 'object' },
-        userType: { type: 'string', enum: ['CLINIC', 'THERAPIST'] },
+        userType: { type: 'string', enum: ['ADMIN', 'CLINIC', 'THERAPIST'] },
       },
     },
   })
@@ -185,6 +215,33 @@ export class AuthController {
   })
   async getProfile(@Request() req) {
     return this.authService.getProfile(req.user.sub, req.user.userType);
+  }
+
+  // FIX: Added admin profile update endpoint
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN')
+  @Patch('admin/profile')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth('bearer')
+  @ApiOperation({
+    summary: 'Update admin profile',
+    description: 'Update profile information for the authenticated admin.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Profile updated successfully',
+  })
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthorized - Invalid or missing token',
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Admin not found',
+  })
+  @ApiBody({ type: UpdateAdminDto })
+  async updateAdminProfile(@Request() req, @Body() dto: UpdateAdminDto) {
+    return this.authService.updateAdminProfile(req.user.sub, dto);
   }
 
   @UseGuards(JwtAuthGuard)

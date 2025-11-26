@@ -11,6 +11,8 @@ import { ReportsModule } from './reports/reports.module';
 import { SubscriptionsModule } from './subscriptions/subscriptions.module';
 import { PaymentMethodsModule } from './paymentMethod/payment-methods.module';
 import { SubscriptionPlansModule } from './subscription-plans/subscription-plans.module';
+import { SupportModule } from './support/support.module';
+import { ResourcesModule } from './resources/resources.module';
 
 @Module({
   imports: [
@@ -26,7 +28,9 @@ import { SubscriptionPlansModule } from './subscription-plans/subscription-plans
     ReportsModule ,
     SubscriptionsModule,
     PaymentMethodsModule,
-    SubscriptionPlansModule
+    SubscriptionPlansModule,
+    SupportModule,
+    ResourcesModule
   ],
 })
 export class AppModule {}

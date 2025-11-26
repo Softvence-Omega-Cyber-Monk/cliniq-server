@@ -18,11 +18,15 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   }
 
   async validate(payload: any) {
-
     if (payload.userType === 'ADMIN') {
       const admin = await this.prisma.admin.findUnique({
         where: { id: payload.sub },
       });
+
+      // FIX: Added missing error check for admin
+      if (!admin) {
+        throw new UnauthorizedException('User not found');
+      }
     }
     else if (payload.userType === 'CLINIC') {
       const clinic = await this.prisma.privateClinic.findUnique({

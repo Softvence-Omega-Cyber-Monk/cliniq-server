@@ -12,9 +12,9 @@ async function bootstrap() {
   // Global validation pipe
   app.useGlobalPipes(
     new ValidationPipe({
-      whitelist: true,
-      forbidNonWhitelisted: true,
-      transform: true,
+      transform: true, // Enable transformation
+      whitelist: true, // Strip properties that don't have decorators
+      forbidNonWhitelisted: false, // Don't throw error for extra properties (for multipart/form-data)
     }),
   );
 

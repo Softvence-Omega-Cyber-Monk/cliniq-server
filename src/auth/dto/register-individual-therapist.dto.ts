@@ -1,5 +1,5 @@
 import { ApiProperty } from "@nestjs/swagger";
-import { IsEmail, IsNotEmpty, IsOptional, IsString, MinLength } from "class-validator";
+import { IsEmail, IsNotEmpty, IsOptional, IsString, MinLength, IsArray } from "class-validator";
 
 export class RegisterIndividualTherapistDto {
     @ApiProperty({
@@ -69,6 +69,17 @@ export class RegisterIndividualTherapistDto {
     @IsString()
     @IsOptional()
     timeZone?: string;
+
+    @ApiProperty({
+        description: 'Available days of the week',
+        example: ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY'],
+        required: false,
+        isArray: true,
+        enum: ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'],
+    })
+    @IsArray()
+    @IsOptional()
+    availableDays?: string[];
 
     @ApiProperty({
         description: 'Password (minimum 8 characters, must contain uppercase, lowercase, number, and special character)',

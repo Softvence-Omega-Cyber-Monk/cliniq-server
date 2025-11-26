@@ -15,6 +15,8 @@ model Admin {
   password  String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  passwordResets PasswordReset[] @relation("AdminPasswordReset")
 }
 
 model PrivateClinic {
@@ -41,6 +43,7 @@ model PrivateClinic {
   stripeCustomerId String?     @unique
 
   paymentMethods PaymentMethod[] @relation("ClinicPayment")
+  passwordResets PasswordReset[] @relation("ClinicPasswordReset")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -70,14 +73,50 @@ model Therapist {
   subscriptions Subscription[]
   payments      Payment[]
 
+  availableDays String[] @default([])
+
   paymentMethods PaymentMethod[] @relation("TherapistPayment")
   invoices       Invoice[]       @relation("TherapistInvoice")
   clients        Client[]
   appointments   Appointment[]
   supportTickets Support[]       @relation("TherapistSupport")
+  passwordResets PasswordReset[] @relation("TherapistPasswordReset")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// NEW: Password Reset Model
+model PasswordReset {
+  id        String        @id @default(uuid())
+  token     String        @unique
+  email     String
+  userType  ResetUserType
+  expiresAt DateTime
+  used      Boolean       @default(false)
+
+  adminId String?
+  admin   Admin?  @relation("AdminPasswordReset", fields: [adminId], references: [id], onDelete: Cascade)
+
+  clinicId String?
+  clinic   PrivateClinic? @relation("ClinicPasswordReset", fields: [clinicId], references: [id], onDelete: Cascade)
+
+  therapistId String?
+  therapist   Therapist? @relation("TherapistPasswordReset", fields: [therapistId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@index([token])
+  @@index([email])
+  @@index([expiresAt])
+  @@map("password_resets")
+}
+
+enum ResetUserType {
+  ADMIN
+  CLINIC
+  THERAPIST
+  INDIVIDUAL_THERAPIST
 }
 
 model Invoice {
@@ -185,6 +224,9 @@ model Support {
   resolvedAt     DateTime?
   resolutionNote String?   @db.Text
 
+  // Relations
+  messages SupportMessage[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -194,6 +236,33 @@ model Support {
   @@index([clinicId])
   @@index([therapistId])
   @@map("supports")
+}
+
+// NEW: Support Messages Model for threaded conversations
+model SupportMessage {
+  id String @id @default(uuid())
+
+  supportId String
+  support   Support @relation(fields: [supportId], references: [id], onDelete: Cascade)
+
+  senderType  String // "USER" or "ADMIN"
+  senderId    String // userId or adminId
+  senderName  String
+  senderEmail String
+
+  message String @db.Text
+
+  // Attachments (optional)
+  attachments Json? // Array of { url, filename, type }
+
+  isRead Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  @@index([supportId])
+  @@index([senderType])
+  @@index([createdAt])
+  @@map("support_messages")
 }
 
 enum UserType {
@@ -320,6 +389,28 @@ model Payment {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+model Resource {
+  id               String   @id @default(uuid())
+  title            String
+  fileUrl          String
+  filePublicId     String // Cloudinary public ID for deletion
+  fileType         String // pdf, mp4, etc.
+  fileSize         Int // Size in bytes
+  imageUrl         String? // Thumbnail image URL
+  imagePublicId    String? // Cloudinary public ID for image
+  category         String // WORKSHEET, PDF, VIDEO, etc.
+  shortDescription String
+  longDescription  String?  @db.Text
+  isActive         Boolean  @default(true)
+  uploadedBy       String? // User ID who uploaded
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([category])
+  @@index([isActive])
+  @@index([uploadedBy])
 }
 
 enum SubscriptionStatus {

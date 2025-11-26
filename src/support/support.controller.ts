@@ -3,12 +3,13 @@ import {
   Controller,
   Get,
   Post,
-  Put,
+  Patch,
+  Delete,
+  Body,
   Param,
   Query,
-  Body,
-  UseGuards,
   Request,
+  UseGuards,
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
@@ -17,247 +18,253 @@ import {
   ApiOperation,
   ApiResponse,
   ApiBearerAuth,
-  ApiParam,
   ApiQuery,
+  ApiParam,
 } from '@nestjs/swagger';
 import { SupportService } from './support.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CreateSupportTicketDto } from './dto/create-support-ticket.dto';
+import { UpdateSupportTicketDto } from './dto/update-support-ticket.dto';
 import { AdminReplyDto } from './dto/admin-reply.dto';
-import { UpdateSupportStatusDto } from './dto/update-support-status.dto';
-import { SearchSupportDto } from './dto/search-support.dto';
-import { SupportTicketDto } from './dto/support-ticket.dto';
+import { ResolveSupportTicketDto } from './dto/resolve-support-ticket.dto';
+import { SendMessageDto } from './dto/send-message.dto';
 
-@ApiTags('Support')
-@ApiBearerAuth('bearer')
-@UseGuards(JwtAuthGuard)
+@ApiTags('Support & Billing')
 @Controller('support')
+@UseGuards(JwtAuthGuard)
+@ApiBearerAuth('bearer')
 export class SupportController {
   constructor(private readonly supportService: SupportService) {}
 
-  // ==================== CREATE SUPPORT TICKET ====================
+  // ==================== USER ENDPOINTS ====================
 
   @Post('tickets')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
-    summary: 'Create support ticket',
-    description: 'Any logged-in user (Therapist or Clinic) can create a support ticket to contact admin.',
+    summary: 'Create a new support ticket',
+    description: 'Create a support ticket for billing or technical issues',
   })
-  @ApiResponse({
-    status: 201,
-    description: 'Support ticket created successfully',
-    type: SupportTicketDto,
-  })
+  @ApiResponse({ status: 201, description: 'Ticket created successfully' })
   @ApiResponse({ status: 401, description: 'Unauthorized' })
-  async createTicket(
-    @Request() req,
-    @Body() dto: CreateSupportTicketDto,
-  ) {
-    return this.supportService.createTicket(
-      req.user.sub,
-      req.user.userType,
-      req.user.email,
-      dto,
-    );
+  async createTicket(@Request() req, @Body() dto: CreateSupportTicketDto) {
+    return this.supportService.createTicket(req.user.sub, req.user.userType, dto);
   }
-
-  // ==================== GET TICKETS ====================
 
   @Get('tickets')
   @ApiOperation({
-    summary: 'Get support tickets',
-    description: 'Users see their own tickets, Admins see all tickets.',
+    summary: 'Get all tickets for current user',
+    description: 'Retrieve all support tickets created by the authenticated user',
   })
-  @ApiResponse({
-    status: 200,
-    description: 'Tickets retrieved successfully',
-    type: SupportTicketDto,
-    isArray: true,
-  })
-  @ApiResponse({ status: 401, description: 'Unauthorized' })
-  @ApiQuery({ name: 'search', required: false, type: String, example: 'login issue' })
-  @ApiQuery({ name: 'status', required: false, type: String, example: 'open' })
-  @ApiQuery({ name: 'ownerType', required: false, type: String, example: 'THERAPIST' })
-  @ApiQuery({ name: 'page', required: false, type: Number, example: 1 })
-  @ApiQuery({ name: 'limit', required: false, type: Number, example: 10 })
-  async getTickets(
-    @Request() req,
-    @Query() query: SearchSupportDto,
-  ) {
-    return this.supportService.getTickets(
-      req.user.sub,
-      req.user.userType,
-      query,
-    );
+  @ApiQuery({ name: 'status', required: false, enum: ['open', 'in-progress', 'resolved', 'closed'] })
+  @ApiResponse({ status: 200, description: 'Tickets retrieved successfully' })
+  async getUserTickets(@Request() req, @Query('status') status?: string) {
+    return this.supportService.getUserTickets(req.user.sub, req.user.userType, status);
   }
-
-  @Get('my-tickets')
-  @ApiOperation({
-    summary: 'Get my support tickets',
-    description: 'Get all support tickets created by the logged-in user.',
-  })
-  @ApiResponse({
-    status: 200,
-    description: 'User tickets retrieved successfully',
-    type: SupportTicketDto,
-    isArray: true,
-  })
-  @ApiResponse({ status: 401, description: 'Unauthorized' })
-  @ApiQuery({ name: 'status', required: false, type: String, example: 'open' })
-  @ApiQuery({ name: 'page', required: false, type: Number, example: 1 })
-  @ApiQuery({ name: 'limit', required: false, type: Number, example: 10 })
-  async getMyTickets(
-    @Request() req,
-    @Query() query: SearchSupportDto,
-  ) {
-    return this.supportService.getMyTickets(
-      req.user.sub,
-      req.user.userType,
-      query,
-    );
-  }
-
-  @Get('stats')
-  @UseGuards(RolesGuard)
-  @Roles('ADMIN')
-  @ApiOperation({
-    summary: 'Get support ticket statistics',
-    description: 'Get support ticket statistics (Admin only).',
-  })
-  @ApiResponse({
-    status: 200,
-    description: 'Statistics retrieved successfully',
-  })
-  @ApiResponse({ status: 401, description: 'Unauthorized' })
-  @ApiResponse({ status: 403, description: 'Forbidden - Admin only' })
-  async getTicketStats() {
-    return this.supportService.getTicketStats();
-  }
-
-  // ==================== GET SINGLE TICKET ====================
 
   @Get('tickets/:id')
   @ApiOperation({
-    summary: 'Get ticket details',
-    description: 'Get detailed information about a specific support ticket.',
+    summary: 'Get ticket by ID',
+    description: 'Retrieve a specific support ticket',
   })
-  @ApiResponse({
-    status: 200,
-    description: 'Ticket details retrieved successfully',
-    type: SupportTicketDto,
-  })
-  @ApiResponse({ status: 401, description: 'Unauthorized' })
-  @ApiResponse({ status: 403, description: 'Forbidden' })
+  @ApiParam({ name: 'id', description: 'Ticket ID' })
+  @ApiResponse({ status: 200, description: 'Ticket retrieved successfully' })
   @ApiResponse({ status: 404, description: 'Ticket not found' })
-  @ApiParam({
-    name: 'id',
-    description: 'Support Ticket ID',
-    example: '123e4567-e89b-12d3-a456-426614174000',
-  })
-  async getTicketById(
-    @Request() req,
-    @Param('id') id: string,
-  ) {
-    return this.supportService.getTicketById(
-      req.user.sub,
-      req.user.userType,
-      id,
-    );
+  async getTicketById(@Request() req, @Param('id') ticketId: string) {
+    return this.supportService.getTicketById(ticketId, req.user.sub, req.user.userType);
   }
 
-  // ==================== ADMIN REPLY ====================
+  @Patch('tickets/:id')
+  @ApiOperation({
+    summary: 'Update a ticket',
+    description: 'Update subject or message of an open ticket',
+  })
+  @ApiParam({ name: 'id', description: 'Ticket ID' })
+  @ApiResponse({ status: 200, description: 'Ticket updated successfully' })
+  @ApiResponse({ status: 400, description: 'Cannot update closed/resolved ticket' })
+  async updateTicket(
+    @Request() req,
+    @Param('id') ticketId: string,
+    @Body() dto: UpdateSupportTicketDto,
+  ) {
+    return this.supportService.updateTicket(ticketId, req.user.sub, req.user.userType, dto);
+  }
 
-  @Post('tickets/:id/reply')
-  @UseGuards(RolesGuard)
-  @Roles('ADMIN')
+  @Delete('tickets/:id')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Delete a ticket',
+    description: 'Delete an open ticket (only works for open tickets)',
+  })
+  @ApiParam({ name: 'id', description: 'Ticket ID' })
+  @ApiResponse({ status: 200, description: 'Ticket deleted successfully' })
+  @ApiResponse({ status: 400, description: 'Can only delete open tickets' })
+  async deleteTicket(@Request() req, @Param('id') ticketId: string) {
+    return this.supportService.deleteTicket(ticketId, req.user.sub, req.user.userType);
+  }
+
+  // ==================== MESSAGING ENDPOINTS ====================
+
+  @Post('tickets/:id/messages')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
-    summary: 'Reply to support ticket (Admin only)',
-    description: 'Admin can reply to a support ticket. User will receive email notification with admin response.',
+    summary: 'Send a message in ticket thread',
+    description: 'Send a message in the support ticket conversation',
   })
-  @ApiResponse({
-    status: 201,
-    description: 'Reply sent successfully',
-  })
-  @ApiResponse({ status: 401, description: 'Unauthorized' })
-  @ApiResponse({ status: 403, description: 'Forbidden - Admin only' })
+  @ApiParam({ name: 'id', description: 'Ticket ID' })
+  @ApiResponse({ status: 201, description: 'Message sent successfully' })
   @ApiResponse({ status: 404, description: 'Ticket not found' })
-  @ApiParam({
-    name: 'id',
-    description: 'Support Ticket ID',
-    example: '123e4567-e89b-12d3-a456-426614174000',
-  })
-  async replyToTicket(
+  async sendMessage(
     @Request() req,
-    @Param('id') id: string,
-    @Body() dto: AdminReplyDto,
+    @Param('id') ticketId: string,
+    @Body() dto: SendMessageDto,
   ) {
-    return this.supportService.replyToTicket(
-      req.user.email,
-      id,
-      dto,
+    return this.supportService.sendMessage(
+      ticketId,
+      req.user.sub,
+      req.user.userType,
+      dto.message,
     );
   }
 
-  // ==================== UPDATE STATUS ====================
-
-  @Put('tickets/:id/status')
-  @UseGuards(RolesGuard)
-  @Roles('ADMIN')
-  @HttpCode(HttpStatus.OK)
+  @Get('tickets/:id/messages')
   @ApiOperation({
-    summary: 'Update ticket status (Admin only)',
-    description: 'Admin can update the status of a support ticket (open, in-progress, resolved, closed).',
+    summary: 'Get all messages for a ticket',
+    description: 'Retrieve all messages in a support ticket thread',
   })
-  @ApiResponse({
-    status: 200,
-    description: 'Status updated successfully',
-  })
-  @ApiResponse({ status: 401, description: 'Unauthorized' })
-  @ApiResponse({ status: 403, description: 'Forbidden - Admin only' })
-  @ApiResponse({ status: 404, description: 'Ticket not found' })
-  @ApiParam({
-    name: 'id',
-    description: 'Support Ticket ID',
-    example: '123e4567-e89b-12d3-a456-426614174000',
-  })
-  async updateTicketStatus(
-    @Request() req,
-    @Param('id') id: string,
-    @Body() dto: UpdateSupportStatusDto,
-  ) {
-    return this.supportService.updateTicketStatus(id, dto);
+  @ApiParam({ name: 'id', description: 'Ticket ID' })
+  @ApiResponse({ status: 200, description: 'Messages retrieved successfully' })
+  async getTicketMessages(@Request() req, @Param('id') ticketId: string) {
+    return this.supportService.getTicketMessages(ticketId, req.user.sub, req.user.userType);
   }
 
-  // ==================== RESOLVE TICKET ====================
+  @Get('tickets/:id/unread-count')
+  @ApiOperation({
+    summary: 'Get unread message count for ticket',
+    description: 'Get the count of unread messages in a specific ticket',
+  })
+  @ApiParam({ name: 'id', description: 'Ticket ID' })
+  @ApiResponse({ status: 200, description: 'Unread count retrieved successfully' })
+  async getUnreadMessageCount(@Request() req, @Param('id') ticketId: string) {
+    return this.supportService.getUnreadMessageCount(ticketId, req.user.sub, req.user.userType);
+  }
 
-  @Put('tickets/:id/resolve')
+  @Get('unread-messages')
+  @ApiOperation({
+    summary: 'Get total unread messages',
+    description: 'Get total unread messages across all tickets for current user',
+  })
+  @ApiResponse({ status: 200, description: 'Unread count retrieved successfully' })
+  async getTotalUnreadMessages(@Request() req) {
+    return this.supportService.getTotalUnreadMessages(req.user.sub, req.user.userType);
+  }
+
+  @Delete('messages/:id')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Delete a message',
+    description: 'Delete your own message from a ticket thread',
+  })
+  @ApiParam({ name: 'id', description: 'Message ID' })
+  @ApiResponse({ status: 200, description: 'Message deleted successfully' })
+  @ApiResponse({ status: 403, description: 'Can only delete your own messages' })
+  async deleteMessage(@Request() req, @Param('id') messageId: string) {
+    return this.supportService.deleteMessage(messageId, req.user.sub, req.user.userType);
+  }
+
+  // ==================== ADMIN ENDPOINTS ====================
+
+  @Get('admin/tickets')
+  @UseGuards(RolesGuard)
+  @Roles('ADMIN')
+  @ApiOperation({
+    summary: 'Get all tickets (Admin)',
+    description: 'Admin endpoint to retrieve all support tickets',
+  })
+  @ApiQuery({ name: 'status', required: false })
+  @ApiQuery({ name: 'ownerType', required: false, enum: ['CLINIC', 'THERAPIST'] })
+  @ApiResponse({ status: 200, description: 'All tickets retrieved successfully' })
+  async getAllTickets(
+    @Query('status') status?: string,
+    @Query('ownerType') ownerType?: string,
+  ) {
+    return this.supportService.getAllTickets(status, ownerType);
+  }
+
+  @Post('admin/tickets/:id/reply')
   @UseGuards(RolesGuard)
   @Roles('ADMIN')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'Resolve ticket (Admin only)',
-    description: 'Admin can mark a ticket as resolved. User will receive email notification.',
+    summary: 'Admin reply to ticket',
+    description: 'Admin sends a reply to a support ticket',
   })
-  @ApiResponse({
-    status: 200,
-    description: 'Ticket resolved successfully',
-  })
-  @ApiResponse({ status: 401, description: 'Unauthorized' })
-  @ApiResponse({ status: 403, description: 'Forbidden - Admin only' })
-  @ApiResponse({ status: 404, description: 'Ticket not found' })
-  @ApiParam({
-    name: 'id',
-    description: 'Support Ticket ID',
-    example: '123e4567-e89b-12d3-a456-426614174000',
-  })
-  async resolveTicket(
+  @ApiParam({ name: 'id', description: 'Ticket ID' })
+  @ApiResponse({ status: 200, description: 'Reply sent successfully' })
+  async adminReplyToTicket(
     @Request() req,
-    @Param('id') id: string,
+    @Param('id') ticketId: string,
     @Body() dto: AdminReplyDto,
   ) {
-    return this.supportService.resolveTicket(id, dto);
+    return this.supportService.adminReplyToTicket(ticketId, req.user.email, dto);
+  }
+
+  @Patch('admin/tickets/:id/resolve')
+  @UseGuards(RolesGuard)
+  @Roles('ADMIN')
+  @ApiOperation({
+    summary: 'Resolve a ticket',
+    description: 'Mark a ticket as resolved with resolution notes',
+  })
+  @ApiParam({ name: 'id', description: 'Ticket ID' })
+  @ApiResponse({ status: 200, description: 'Ticket resolved successfully' })
+  async resolveTicket(
+    @Param('id') ticketId: string,
+    @Body() dto: ResolveSupportTicketDto,
+  ) {
+    return this.supportService.resolveTicket(ticketId, dto);
+  }
+
+  @Patch('admin/tickets/:id/close')
+  @UseGuards(RolesGuard)
+  @Roles('ADMIN')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Close a ticket',
+    description: 'Close a support ticket',
+  })
+  @ApiParam({ name: 'id', description: 'Ticket ID' })
+  @ApiResponse({ status: 200, description: 'Ticket closed successfully' })
+  async closeTicket(@Param('id') ticketId: string) {
+    return this.supportService.closeTicket(ticketId);
+  }
+
+  @Patch('admin/tickets/:id/status')
+  @UseGuards(RolesGuard)
+  @Roles('ADMIN')
+  @ApiOperation({
+    summary: 'Update ticket status',
+    description: 'Update the status of a support ticket',
+  })
+  @ApiParam({ name: 'id', description: 'Ticket ID' })
+  @ApiResponse({ status: 200, description: 'Status updated successfully' })
+  async updateTicketStatus(
+    @Param('id') ticketId: string,
+    @Body('status') status: string,
+  ) {
+    return this.supportService.updateTicketStatus(ticketId, status);
+  }
+
+  @Get('admin/stats')
+  @UseGuards(RolesGuard)
+  @Roles('ADMIN')
+  @ApiOperation({
+    summary: 'Get ticket statistics',
+    description: 'Get statistics about support tickets',
+  })
+  @ApiResponse({ status: 200, description: 'Statistics retrieved successfully' })
+  async getTicketStats() {
+    return this.supportService.getTicketStats();
   }
 }

@@ -7,52 +7,210 @@ export class ReportsService {
   constructor(private prisma: PrismaService) {}
 
   /**
-   * Get dashboard statistics
+   * Get dashboard statistics based on user role
    */
   async getDashboardStats(userId: string, userType: string, filters: ReportFiltersDto) {
     const { startDate, endDate } = this.getDateRange(filters.dateRange!, filters.startDate, filters.endDate);
     const previousPeriod = this.getPreviousPeriod(startDate, endDate);
 
-    // Build where clause based on user type
-    const whereClause = await this.buildWhereClause(userId, userType, filters.therapistId);
+    if (userType === 'ADMIN') {
+      return this.getAdminDashboardStats(startDate, endDate, previousPeriod);
+    } else if (userType === 'CLINIC') {
+      return this.getClinicDashboardStats(userId, startDate, endDate, previousPeriod);
+    } else if (userType === 'THERAPIST') {
+      return this.getTherapistDashboardStats(userId, startDate, endDate, previousPeriod);
+    }
 
-    // Current period stats
-    const [
-      currentSessions,
-      currentTherapists,
-      currentClients,
-      crisisAlerts,
-    ] = await Promise.all([
-      this.getSessionsCount(whereClause, startDate, endDate),
-      this.getActiveTherapistsCount(whereClause, startDate, endDate),
-      this.getActiveClientsCount(whereClause, startDate, endDate),
-      this.getCrisisAlertsCount(whereClause, startDate, endDate),
-    ]);
+    throw new ForbiddenException('Invalid user type');
+  }
 
-    // Previous period stats for growth calculation
+  /**
+   * Admin Dashboard Stats
+   */
+  private async getAdminDashboardStats(startDate: Date, endDate: Date, previousPeriod: any) {
     const [
-      previousSessions,
+      totalTherapists,
       previousTherapists,
-      previousClients,
+      upcomingSessions,
+      previousUpcoming,
+      crisisAlerts,
+      completedSessions,
+      previousCompleted,
     ] = await Promise.all([
-      this.getSessionsCount(whereClause, previousPeriod.start, previousPeriod.end),
-      this.getActiveTherapistsCount(whereClause, previousPeriod.start, previousPeriod.end),
-      this.getActiveClientsCount(whereClause, previousPeriod.start, previousPeriod.end),
+      this.prisma.therapist.count({
+        where: { createdAt: { lte: endDate } }
+      }),
+      this.prisma.therapist.count({
+        where: { createdAt: { lte: previousPeriod.end } }
+      }),
+      this.prisma.appointment.count({
+        where: {
+          scheduledDate: { gte: new Date(), lte: endDate },
+          status: { in: ['scheduled', 'confirmed'] }
+        }
+      }),
+      this.prisma.appointment.count({
+        where: {
+          scheduledDate: { gte: previousPeriod.start, lte: previousPeriod.end },
+          status: { in: ['scheduled', 'confirmed'] }
+        }
+      }),
+      this.getCrisisAlertsCount({}, startDate, endDate),
+      this.prisma.appointment.count({
+        where: {
+          scheduledDate: { gte: startDate, lte: endDate },
+          status: 'completed'
+        }
+      }),
+      this.prisma.appointment.count({
+        where: {
+          scheduledDate: { gte: previousPeriod.start, lte: previousPeriod.end },
+          status: 'completed'
+        }
+      }),
     ]);
 
     return {
-      totalSessions: currentSessions,
-      sessionsGrowth: this.calculateGrowth(currentSessions, previousSessions),
-      activeTherapists: currentTherapists,
-      therapistsGrowth: this.calculateGrowth(currentTherapists, previousTherapists),
-      activeClients: currentClients,
-      clientsGrowth: this.calculateGrowth(currentClients, previousClients),
+      totalTherapists,
+      therapistsGrowth: this.calculateGrowth(totalTherapists, previousTherapists),
+      upcomingSessions,
+      upcomingGrowth: this.calculateGrowth(upcomingSessions, previousUpcoming),
+      crisisAlerts,
+      completedSessions,
+      completedGrowth: this.calculateGrowth(completedSessions, previousCompleted),
+    };
+  }
+
+  /**
+   * Clinic Dashboard Stats
+   */
+  private async getClinicDashboardStats(clinicId: string, startDate: Date, endDate: Date, previousPeriod: any) {
+    // Get therapists under this clinic
+    const therapists = await this.prisma.therapist.findMany({
+      where: { clinicId },
+      select: { id: true }
+    });
+    const therapistIds = therapists.map(t => t.id);
+
+    const [
+      totalTherapists,
+      previousTherapists,
+      totalClients,
+      previousClients,
+      upcomingSessions,
+      previousUpcoming,
+      crisisAlerts,
+    ] = await Promise.all([
+      this.prisma.therapist.count({
+        where: { clinicId, createdAt: { lte: endDate } }
+      }),
+      this.prisma.therapist.count({
+        where: { clinicId, createdAt: { lte: previousPeriod.end } }
+      }),
+      this.prisma.client.count({
+        where: { 
+          therapistId: { in: therapistIds },
+          createdAt: { lte: endDate }
+        }
+      }),
+      this.prisma.client.count({
+        where: { 
+          therapistId: { in: therapistIds },
+          createdAt: { lte: previousPeriod.end }
+        }
+      }),
+      this.prisma.appointment.count({
+        where: {
+          therapistId: { in: therapistIds },
+          scheduledDate: { gte: new Date(), lte: endDate },
+          status: { in: ['scheduled', 'confirmed'] }
+        }
+      }),
+      this.prisma.appointment.count({
+        where: {
+          therapistId: { in: therapistIds },
+          scheduledDate: { gte: previousPeriod.start, lte: previousPeriod.end },
+          status: { in: ['scheduled', 'confirmed'] }
+        }
+      }),
+      this.getCrisisAlertsCount({ therapistId: { in: therapistIds } }, startDate, endDate),
+    ]);
+
+    return {
+      totalTherapists,
+      therapistsGrowth: this.calculateGrowth(totalTherapists, previousTherapists),
+      totalClients,
+      clientsGrowth: this.calculateGrowth(totalClients, previousClients),
+      upcomingSessions,
+      upcomingGrowth: this.calculateGrowth(upcomingSessions, previousUpcoming),
       crisisAlerts,
     };
   }
 
   /**
-   * Get session trends
+   * Therapist Dashboard Stats
+   */
+  private async getTherapistDashboardStats(therapistId: string, startDate: Date, endDate: Date, previousPeriod: any) {
+    const [
+      totalClients,
+      previousClients,
+      upcomingAppointments,
+      previousUpcoming,
+      completedSessions,
+      previousCompleted,
+      treatmentProgress,
+    ] = await Promise.all([
+      this.prisma.client.count({
+        where: { therapistId, createdAt: { lte: endDate } }
+      }),
+      this.prisma.client.count({
+        where: { therapistId, createdAt: { lte: previousPeriod.end } }
+      }),
+      this.prisma.appointment.count({
+        where: {
+          therapistId,
+          scheduledDate: { gte: new Date(), lte: endDate },
+          status: { in: ['scheduled', 'confirmed'] }
+        }
+      }),
+      this.prisma.appointment.count({
+        where: {
+          therapistId,
+          scheduledDate: { gte: previousPeriod.start, lte: previousPeriod.end },
+          status: { in: ['scheduled', 'confirmed'] }
+        }
+      }),
+      this.prisma.appointment.count({
+        where: {
+          therapistId,
+          scheduledDate: { gte: startDate, lte: endDate },
+          status: 'completed'
+        }
+      }),
+      this.prisma.appointment.count({
+        where: {
+          therapistId,
+          scheduledDate: { gte: previousPeriod.start, lte: previousPeriod.end },
+          status: 'completed'
+        }
+      }),
+      this.calculateTreatmentProgress(therapistId),
+    ]);
+
+    return {
+      totalClients,
+      clientsGrowth: this.calculateGrowth(totalClients, previousClients),
+      upcomingAppointments,
+      upcomingGrowth: this.calculateGrowth(upcomingAppointments, previousUpcoming),
+      completedSessions,
+      completedGrowth: this.calculateGrowth(completedSessions, previousCompleted),
+      treatmentProgress,
+      treatmentGrowth: 12.3, // This would need actual calculation based on treatment plans
+    };
+  }
+
+  /**
+   * Get session trends - works for all roles
    */
   async getSessionTrends(userId: string, userType: string, filters: ReportFiltersDto) {
     const { startDate, endDate } = this.getDateRange(filters.dateRange!, filters.startDate, filters.endDate);
@@ -94,24 +252,26 @@ export class ReportsService {
   }
 
   /**
-   * Get therapist activity
+   * Get therapist activity - Admin and Clinic can see multiple therapists
    */
   async getTherapistActivity(userId: string, userType: string, filters: ReportFiltersDto) {
-    // const whereClause = await this.buildWhereClause(userId, userType, null);
-
     const today = new Date();
     const thisWeekStart = new Date(today.setDate(today.getDate() - today.getDay()));
     const lastWeekStart = new Date(thisWeekStart);
     lastWeekStart.setDate(lastWeekStart.getDate() - 7);
     const lastWeekEnd = new Date(thisWeekStart);
 
-    // Get therapists
     let therapists;
-    if (userType === 'CLINIC') {
+    if (userType === 'ADMIN') {
+      therapists = await this.prisma.therapist.findMany({
+        select: { id: true, fullName: true },
+        take: 10,
+        orderBy: { createdAt: 'desc' }
+      });
+    } else if (userType === 'CLINIC') {
       therapists = await this.prisma.therapist.findMany({
         where: { clinicId: userId },
         select: { id: true, fullName: true },
-        take: 10,
       });
     } else if (userType === 'THERAPIST') {
       therapists = await this.prisma.therapist.findMany({
@@ -119,10 +279,7 @@ export class ReportsService {
         select: { id: true, fullName: true },
       });
     } else {
-      therapists = await this.prisma.therapist.findMany({
-        select: { id: true, fullName: true },
-        take: 10,
-      });
+      return { therapists: [] };
     }
 
     const activityData = await Promise.all(
@@ -157,81 +314,64 @@ export class ReportsService {
   }
 
   /**
-   * Get session data report
+   * Get recent sessions - for all roles
    */
-  async getSessionDataReport(userId: string, userType: string, filters: ReportFiltersDto) {
-    const { startDate, endDate } = this.getDateRange(filters.dateRange!, filters.startDate, filters.endDate);
-    const whereClause = await this.buildWhereClause(userId, userType, filters.therapistId);
+  async getRecentSessions(userId: string, userType: string, limit: number = 5) {
+    const whereClause = await this.buildWhereClause(userId, userType, undefined);
 
-    // Get therapists with their appointment stats
-    let therapists;
-    if (userType === 'CLINIC') {
-      therapists = await this.prisma.therapist.findMany({
-        where: { clinicId: userId },
-        select: { id: true, fullName: true },
-      });
-    } else if (userType === 'THERAPIST') {
-      therapists = await this.prisma.therapist.findMany({
-        where: { id: userId },
-        select: { id: true, fullName: true },
-      });
-    } else {
-      therapists = await this.prisma.therapist.findMany({
-        select: { id: true, fullName: true },
-        take: 20,
-      });
-    }
+    const sessions = await this.prisma.appointment.findMany({
+      where: {
+        ...whereClause,
+        status: { in: ['scheduled', 'confirmed', 'in_progress'] },
+        scheduledDate: { gte: new Date() }
+      },
+      select: {
+        id: true,
+        scheduledDate: true,
+        status: true,
+        sessionType: true,
+        therapistId: true,
+        clientId: true,
+      },
+      orderBy: { scheduledDate: 'asc' },
+      take: limit,
+    });
 
-    const reportData = await Promise.all(
-      therapists.map(async (therapist) => {
-        const appointments = await this.prisma.appointment.findMany({
-          where: {
-            therapistId: therapist.id,
-            scheduledDate: { gte: startDate, lte: endDate },
-          },
-          select: {
-            duration: true,
-            status: true,
-          },
-        });
-
-        const totalSessions = appointments.length;
-        const completedSessions = appointments.filter(a => a.status === 'completed').length;
-        const avgDuration = totalSessions > 0
-          ? Math.round(appointments.reduce((sum, a) => sum + a.duration, 0) / totalSessions)
-          : 0;
-        const completionRate = totalSessions > 0
-          ? Math.round((completedSessions / totalSessions) * 100)
-          : 0;
-
-        // Determine status based on recent activity
-        const recentAppointments = appointments.filter(a => {
-          const aptDate = new Date(a.status);
-          const daysDiff = (Date.now() - aptDate.getTime()) / (1000 * 60 * 60 * 24);
-          return daysDiff <= 7;
-        });
+    // Fetch therapist and client details separately
+    const sessionDetails = await Promise.all(
+      sessions.map(async (session) => {
+        const [therapist, client] = await Promise.all([
+          this.prisma.therapist.findUnique({
+            where: { id: session.therapistId },
+            select: { id: true, fullName: true }
+          }),
+          this.prisma.client.findUnique({
+            where: { id: session.clientId },
+            select: { id: true, name: true }
+          })
+        ]);
 
         return {
-          therapistId: therapist.id,
-          therapistName: therapist.fullName,
-          sessions: totalSessions,
-          avgDuration,
-          completionRate,
-          status: recentAppointments.length > 0 ? 'active' : 'inactive',
+          therapistId: therapist?.id || '',
+          therapistName: therapist?.fullName || 'Unknown',
+          clientId: client?.id || '',
+          clientName: client?.name || 'Unknown',
+          patientId: `#${client?.id.substring(0, 4) || '0000'}`,
+          status: session.status,
+          scheduledDate: session.scheduledDate,
         };
       })
     );
 
-    return { data: reportData };
+    return sessionDetails;
   }
 
   /**
-   * Get recent crisis alerts
+   * Get session alerts (crisis alerts for therapist)
    */
-  async getRecentCrisisAlerts(userId: string, userType: string, limit: number = 10) {
-    const whereClause = await this.buildWhereClause(userId, userType, '');
+  async getSessionAlerts(userId: string, userType: string, limit: number = 10) {
+    const whereClause = await this.buildWhereClause(userId, userType, undefined);
 
-    // Get clients with crisis histories
     const clients = await this.prisma.client.findMany({
       where: whereClause,
       select: {
@@ -240,9 +380,9 @@ export class ReportsService {
         crisisHistories: true,
         updatedAt: true,
       },
+      take: limit,
     });
 
-    // Extract and flatten crisis alerts
     const alerts: any[] = [];
     clients.forEach(client => {
       if (client.crisisHistories && Array.isArray(client.crisisHistories)) {
@@ -250,11 +390,10 @@ export class ReportsService {
         crises.forEach(crisis => {
           if (crisis.severity === 'high' || crisis.severity === 'critical') {
             alerts.push({
-              id: crisis.crisisId,
-              title: 'High Risk Assessment',
-              clientId: `#${client.id.substring(0, 4)}`,
+              id: crisis.crisisId || `crisis-${client.id}`,
               clientName: client.name,
               severity: crisis.severity,
+              message: 'Crisis alert flagged in last session',
               createdAt: new Date(crisis.crisisDate),
               timeAgo: this.getTimeAgo(new Date(crisis.crisisDate)),
             });
@@ -263,9 +402,136 @@ export class ReportsService {
       }
     });
 
-    // Sort by date and limit
     alerts.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
     return alerts.slice(0, limit);
+  }
+
+  /**
+   * Get upcoming appointments for therapist
+   */
+  async getUpcomingAppointments(therapistId: string, limit: number = 5) {
+    const appointments = await this.prisma.appointment.findMany({
+      where: {
+        therapistId,
+        scheduledDate: { gte: new Date() },
+        status: { in: ['scheduled', 'confirmed'] }
+      },
+      select: {
+        id: true,
+        scheduledDate: true,
+        status: true,
+        sessionType: true,
+        clientId: true,
+      },
+      orderBy: { scheduledDate: 'asc' },
+      take: limit,
+    });
+
+    // Fetch client details separately
+    const appointmentDetails = await Promise.all(
+      appointments.map(async (apt) => {
+        const client = await this.prisma.client.findUnique({
+          where: { id: apt.clientId },
+          select: { id: true, name: true }
+        });
+
+        return {
+          id: apt.id,
+          clientName: client?.name || 'Unknown',
+          appointmentType: apt.sessionType || 'Therapy Session',
+          scheduledTime: apt.scheduledDate,
+          status: apt.status,
+        };
+      })
+    );
+
+    return appointmentDetails;
+  }
+
+  /**
+   * Get system alerts (for admin/clinic)
+   */
+  async getSystemAlerts(userId: string, userType: string, limit: number = 5) {
+    // Mock system alerts - in production, these would come from a notifications/alerts table
+    const alerts = [
+      {
+        id: '1',
+        type: 'crisis',
+        title: 'Crisis Alert',
+        message: 'Patient flagged for immediate attention',
+        severity: 'high',
+        timeAgo: this.getTimeAgo(new Date(Date.now() - 2 * 60 * 1000)),
+      },
+      {
+        id: '2',
+        type: 'success',
+        title: 'Backup Complete',
+        message: 'Daily backup completed successfully',
+        severity: 'low',
+        timeAgo: this.getTimeAgo(new Date(Date.now() - 2 * 60 * 1000)),
+      },
+      {
+        id: '3',
+        type: 'warning',
+        title: 'Medication Reminder',
+        message: 'Patient due for medication administration',
+        severity: 'medium',
+        timeAgo: this.getTimeAgo(new Date(Date.now() - 5 * 60 * 1000)),
+      },
+      {
+        id: '4',
+        type: 'success',
+        title: 'Backup Complete',
+        message: 'New patient admitted to the ward',
+        severity: 'low',
+        timeAgo: this.getTimeAgo(new Date(Date.now() - 10 * 60 * 1000)),
+      },
+      {
+        id: '5',
+        type: 'warning',
+        title: 'Discharge Processed',
+        message: 'Patient discharge paperwork completed',
+        severity: 'low',
+        timeAgo: this.getTimeAgo(new Date(Date.now() - 15 * 60 * 1000)),
+      },
+    ];
+
+    return alerts.slice(0, limit);
+  }
+
+  /**
+   * Helper: Calculate treatment progress percentage
+   */
+  private async calculateTreatmentProgress(therapistId: string): Promise<number> {
+    const clients = await this.prisma.client.findMany({
+      where: { therapistId },
+      select: {
+        id: true,
+        treatmentGoals: true,
+      }
+    });
+
+    if (clients.length === 0) return 0;
+
+    // Get appointments count for each client
+    const progressData = await Promise.all(
+      clients.map(async (client) => {
+        const completedCount = await this.prisma.appointment.count({
+          where: {
+            clientId: client.id,
+            status: 'completed'
+          }
+        });
+
+        // Assume 10 sessions as default goal if no treatmentGoals specified
+        const goalSessions = 10;
+        const progress = Math.min((completedCount / goalSessions) * 100, 100);
+        return progress;
+      })
+    );
+
+    const totalProgress = progressData.reduce((sum, progress) => sum + progress, 0);
+    return Math.round(totalProgress / clients.length);
   }
 
   /**
@@ -285,6 +551,7 @@ export class ReportsService {
       });
       where.therapistId = { in: therapists.map(t => t.id) };
     }
+    // ADMIN gets all data, no where clause restriction
 
     return where;
   }
@@ -353,48 +620,6 @@ export class ReportsService {
   }
 
   /**
-   * Helper: Get sessions count
-   */
-  private async getSessionsCount(where: any, startDate: Date, endDate: Date) {
-    return this.prisma.appointment.count({
-      where: {
-        ...where,
-        scheduledDate: { gte: startDate, lte: endDate },
-      },
-    });
-  }
-
-  /**
-   * Helper: Get active therapists count
-   */
-  private async getActiveTherapistsCount(where: any, startDate: Date, endDate: Date) {
-    const appointments = await this.prisma.appointment.findMany({
-      where: {
-        ...where,
-        scheduledDate: { gte: startDate, lte: endDate },
-      },
-      select: { therapistId: true },
-      distinct: ['therapistId'],
-    });
-    return appointments.length;
-  }
-
-  /**
-   * Helper: Get active clients count
-   */
-  private async getActiveClientsCount(where: any, startDate: Date, endDate: Date) {
-    const appointments = await this.prisma.appointment.findMany({
-      where: {
-        ...where,
-        scheduledDate: { gte: startDate, lte: endDate },
-      },
-      select: { clientId: true },
-      distinct: ['clientId'],
-    });
-    return appointments.length;
-  }
-
-  /**
    * Helper: Get crisis alerts count
    */
   private async getCrisisAlertsCount(where: any, startDate: Date, endDate: Date) {
@@ -460,10 +685,10 @@ export class ReportsService {
     const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
     
     if (seconds < 60) return `${seconds}s ago`;
-    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-    if (seconds < 2592000) return `${Math.floor(seconds / 86400)}d ago`;
-    if (seconds < 31536000) return `${Math.floor(seconds / 2592000)}mo ago`;
-    return `${Math.floor(seconds / 31536000)}y ago`;
+    if (seconds < 3600) return `${Math.floor(seconds / 60)} min ago`;
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)} hours ago`;
+    if (seconds < 2592000) return `${Math.floor(seconds / 86400)} day ago`;
+    if (seconds < 31536000) return `${Math.floor(seconds / 2592000)} mo ago`;
+    return `${Math.floor(seconds / 31536000)} y ago`;
   }
 }

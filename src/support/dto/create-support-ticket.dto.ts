@@ -4,7 +4,7 @@ import { IsString, IsNotEmpty, MinLength, MaxLength } from 'class-validator';
 export class CreateSupportTicketDto {
   @ApiProperty({
     description: 'Subject of the support ticket',
-    example: 'Unable to schedule appointments',
+    example: 'Billing issue with subscription',
     minLength: 5,
     maxLength: 200,
   })
@@ -15,8 +15,8 @@ export class CreateSupportTicketDto {
   subject: string;
 
   @ApiProperty({
-    description: 'Detailed message describing the issue',
-    example: 'I am experiencing issues when trying to schedule appointments for my clients. The calendar is not loading properly.',
+    description: 'Detailed message about the issue',
+    example: 'I was charged twice for my monthly subscription on January 15th.',
     minLength: 10,
   })
   @IsString()
