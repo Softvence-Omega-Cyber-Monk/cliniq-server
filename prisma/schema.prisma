@@ -38,7 +38,7 @@ model PrivateClinic {
 
   invoices         Invoice[]   @relation("ClinicInvoice")
   therapists       Therapist[]
-  clients          Client[]
+  clients          Client[]    @relation("ClinicClients")
   supportTickets   Support[]   @relation("ClinicSupport")
   stripeCustomerId String?     @unique
 
@@ -77,7 +77,7 @@ model Therapist {
 
   paymentMethods PaymentMethod[] @relation("TherapistPayment")
   invoices       Invoice[]       @relation("TherapistInvoice")
-  clients        Client[]
+  clients        Client[]        @relation("TherapistClients")
   appointments   Appointment[]
   supportTickets Support[]       @relation("TherapistSupport")
   passwordResets PasswordReset[] @relation("TherapistPasswordReset")
@@ -136,7 +136,8 @@ model Invoice {
 
 model Client {
   id              String  @id @default(uuid())
-  therapistId     String
+  therapistId     String?  // Made optional to allow clinic-only clients
+  clinicId        String?  // Added to link client to clinic
   name            String
   email           String
   phone           String
@@ -151,13 +152,16 @@ model Client {
   treatmentProgress Json? // Object: { title, recommendation, percentage }
   sessionHistory    Json? // Array of objects: [{ date, time, note, duration }]
 
-  therapist    Therapist     @relation(fields: [therapistId], references: [id])
+  therapist    Therapist?     @relation("TherapistClients", fields: [therapistId], references: [id])
+  clinic       PrivateClinic? @relation("ClinicClients", fields: [clinicId], references: [id])
   appointments Appointment[]
-
-  privateClinics PrivateClinic[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([therapistId])
+  @@index([clinicId])
+  @@index([email])
 }
 
 model Appointment {

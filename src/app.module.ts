@@ -13,6 +13,7 @@ import { PaymentMethodsModule } from './paymentMethod/payment-methods.module';
 import { SubscriptionPlansModule } from './subscription-plans/subscription-plans.module';
 import { SupportModule } from './support/support.module';
 import { ResourcesModule } from './resources/resources.module';
+import { ClinicClientsModule } from './clinic-clients/clinic-clients.module';
 
 @Module({
   imports: [
@@ -30,7 +31,8 @@ import { ResourcesModule } from './resources/resources.module';
     PaymentMethodsModule,
     SubscriptionPlansModule,
     SupportModule,
-    ResourcesModule
+    ResourcesModule,
+    ClinicClientsModule
   ],
 })
 export class AppModule {}

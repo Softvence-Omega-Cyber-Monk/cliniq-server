@@ -31,6 +31,15 @@ export class SearchClientDto {
   status?: string;
 
   @ApiProperty({
+    description: 'Filter by therapist ID',
+    example: '123e4567-e89b-12d3-a456-426614174000',
+    required: false,
+  })
+  @IsOptional()
+  @IsString()
+  therapistId?: string;
+
+  @ApiProperty({
     description: 'Page number',
     example: 1,
     default: 1,
