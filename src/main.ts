@@ -9,11 +9,11 @@ async function bootstrap() {
 
   // Enable CORS
   app.enableCors();
-  app.use('/webhooks/stripe', json({
-    verify: (req: any, res, buf) => {
-      req.rawBody = buf;
-    }
-  }));
+  // app.use('/webhooks/stripe', json({
+  //   verify: (req: any, res, buf) => {
+  //     req.rawBody = buf;
+  //   }
+  // }));
   // Global validation pipe
   app.useGlobalPipes(
     new ValidationPipe({
@@ -56,6 +56,12 @@ async function bootstrap() {
       operationsSorter: 'alpha',
     },
   });
+
+  // app.use('/webhooks/stripe', json({
+  //   verify: (req: any, res, buf) => {
+  //     req.rawBody = buf;
+  //   }
+  // }));
 
   const port = process.env.PORT || 3000;
   await app.listen(port);
