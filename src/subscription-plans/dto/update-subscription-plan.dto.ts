@@ -1,5 +1,10 @@
-import { IsString, IsNumber, IsPositive, IsInt, IsOptional } from 'class-validator';
+import { IsString, IsNumber, IsPositive, IsInt, IsOptional, IsEnum } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
+
+export enum PlanRole {
+  CLINIC = 'CLINIC',
+  INDIVIDUAL_THERAPIST = 'INDIVIDUAL_THERAPIST',
+}
 
 export class UpdateSubscriptionPlanDto {
   @ApiProperty({
@@ -43,4 +48,14 @@ export class UpdateSubscriptionPlanDto {
   @IsString()
   @IsOptional()
   features?: string;
+
+    @ApiProperty({
+    description: 'Target user role for this plan - determines who can see and purchase it',
+    example: 'INDIVIDUAL_THERAPIST',
+    enum: PlanRole,
+    required: false,
+  })
+  @IsEnum(PlanRole)
+  @IsOptional()
+  role?: PlanRole;
 }

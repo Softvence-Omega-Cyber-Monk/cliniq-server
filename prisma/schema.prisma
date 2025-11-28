@@ -314,6 +314,8 @@ model SubscriptionPlan {
   duration Int // your custom field
   features String // your custom field
 
+  role PlanRole? @default(CLINIC)
+
   // Stripe price ID (optional)
   stripePriceId String? @unique
 
@@ -433,4 +435,9 @@ enum PaymentStatus {
   failed
   canceled
   refunded
+}
+
+enum PlanRole {
+  CLINIC
+  INDIVIDUAL_THERAPIST
 }

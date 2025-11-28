@@ -1,5 +1,10 @@
-import { IsString, IsNumber, IsPositive, IsInt, IsNotEmpty } from 'class-validator';
+import { IsString, IsNumber, IsPositive, IsInt, IsNotEmpty, IsEnum } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
+
+export enum PlanRole {
+  CLINIC = 'CLINIC',
+  INDIVIDUAL_THERAPIST = 'INDIVIDUAL_THERAPIST',
+}
 
 export class CreateSubscriptionPlanDto {
   @ApiProperty({
@@ -37,4 +42,14 @@ export class CreateSubscriptionPlanDto {
   @IsString()
   @IsNotEmpty()
   features: string; // Comma-separated or JSON string of features
+
+  @ApiProperty({
+    description: 'Target user role for this plan - determines who can see and purchase it',
+    example: 'CLINIC',
+    enum: PlanRole,
+    default: PlanRole.CLINIC,
+  })
+  @IsEnum(PlanRole)
+  @IsNotEmpty()
+  role: PlanRole;
 }

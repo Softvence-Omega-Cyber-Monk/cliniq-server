@@ -42,7 +42,7 @@ export class AppointmentsController {
 
   @Post()
   @UseGuards(RolesGuard)
-  @Roles('THERAPIST', 'CLINIC')
+  @Roles('THERAPIST', 'CLINIC', 'INDIVIDUAL_THERAPIST')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
     summary: 'Create appointment',
@@ -232,7 +232,7 @@ export class AppointmentsController {
 
   @Put(':id')
   @UseGuards(RolesGuard)
-  @Roles('THERAPIST', 'CLINIC')
+  @Roles('THERAPIST', 'CLINIC', 'INDIVIDUAL_THERAPIST')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Update appointment',
@@ -266,7 +266,7 @@ export class AppointmentsController {
 
   @Put(':id/status')
   @UseGuards(RolesGuard)
-  @Roles('THERAPIST', 'CLINIC')
+  @Roles('THERAPIST', 'CLINIC', 'INDIVIDUAL_THERAPIST')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Update appointment status',
@@ -301,7 +301,7 @@ export class AppointmentsController {
 
   @Delete(':id')
   @UseGuards(RolesGuard)
-  @Roles('THERAPIST', 'CLINIC')
+  @Roles('THERAPIST', 'CLINIC', 'INDIVIDUAL_THERAPIST')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Delete appointment',

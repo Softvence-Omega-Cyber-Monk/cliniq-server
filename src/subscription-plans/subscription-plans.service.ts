@@ -31,16 +31,19 @@ export class SubscriptionPlansService {
    * Create a new subscription plan
    */
   async createPlan(dto: CreateSubscriptionPlanDto) {
-    // Check if plan name already exists
+    // Check if plan name already exists for the same role
     const existingPlan = await this.prisma.subscriptionPlan.findFirst({
       where: {
         planName: dto.planName,
+        role: dto.role,
         expiredAt: null,
       },
     });
 
     if (existingPlan) {
-      throw new ConflictException('A plan with this name already exists');
+      throw new ConflictException(
+        `A plan with this name already exists for ${dto.role}`
+      );
     }
 
     try {
@@ -50,11 +53,11 @@ export class SubscriptionPlansService {
         description: dto.features,
         metadata: {
           duration: dto.duration.toString(),
+          role: dto.role,
         },
       });
 
       // Create price in Stripe
-      // Determine interval based on duration
       let interval: 'day' | 'week' | 'month' | 'year' = 'month';
       let intervalCount = 1;
 
@@ -68,14 +71,13 @@ export class SubscriptionPlansService {
         interval = 'week';
         intervalCount = 1;
       } else {
-        // For custom durations, use days
         interval = 'day';
         intervalCount = dto.duration;
       }
 
       const stripePrice = await this.stripe.prices.create({
         product: stripeProduct.id,
-        unit_amount: Math.round(dto.price * 100), // Convert to cents
+        unit_amount: Math.round(dto.price * 100),
         currency: 'usd',
         recurring: {
           interval,
@@ -83,6 +85,7 @@ export class SubscriptionPlansService {
         },
         metadata: {
           duration: dto.duration.toString(),
+          role: dto.role,
         },
       });
 
@@ -93,6 +96,7 @@ export class SubscriptionPlansService {
           price: dto.price,
           duration: dto.duration,
           features: dto.features,
+          role: dto.role,
           stripePriceId: stripePrice.id,
         },
       });
@@ -111,12 +115,13 @@ export class SubscriptionPlansService {
   }
 
   /**
-   * Get all subscription plans
+   * Get all subscription plans (optionally filter by role)
    */
-  async getAllPlans() {
+  async getAllPlans(role?: 'CLINIC' | 'INDIVIDUAL_THERAPIST') {
     const plans = await this.prisma.subscriptionPlan.findMany({
       where: {
-        expiredAt: null, // Only active plans
+        expiredAt: null,
+        ...(role && { role }),
       },
       orderBy: {
         price: 'asc',
@@ -161,9 +166,6 @@ export class SubscriptionPlansService {
 
   /**
    * Update a subscription plan
-   * - Can update name, features, and duration
-   * - If price is changed, creates a new Stripe price and archives the old one
-   * - Existing subscriptions continue with old price until renewal
    */
   async updatePlan(id: string, dto: UpdateSubscriptionPlanDto) {
     const existingPlan = await this.prisma.subscriptionPlan.findUnique({
@@ -174,23 +176,25 @@ export class SubscriptionPlansService {
       throw new NotFoundException('Subscription plan not found');
     }
 
-    // Check if plan is expired
     if (existingPlan.expiredAt) {
       throw new BadRequestException('Cannot update an expired plan');
     }
 
-    // Check if new plan name conflicts with another plan
+    // Check if new plan name conflicts with another plan of the same role
     if (dto.planName && dto.planName !== existingPlan.planName) {
       const duplicateName = await this.prisma.subscriptionPlan.findFirst({
         where: {
           planName: dto.planName,
+          role: dto.role || existingPlan.role,
           expiredAt: null,
           id: { not: id },
         },
       });
 
       if (duplicateName) {
-        throw new ConflictException('A plan with this name already exists');
+        throw new ConflictException(
+          `A plan with this name already exists for this role`
+        );
       }
     }
 
@@ -198,20 +202,20 @@ export class SubscriptionPlansService {
       let newStripePriceId = existingPlan.stripePriceId;
 
       if (existingPlan.stripePriceId) {
-        // Get the Stripe price to find the product
         const stripePrice = await this.stripe.prices.retrieve(
           existingPlan.stripePriceId
         );
         const productId = stripePrice.product as string;
 
-        // Update product name/description in Stripe
-        if (dto.planName || dto.features) {
+        // Update product metadata in Stripe
+        if (dto.planName || dto.features || dto.role) {
           await this.stripe.products.update(productId, {
             ...(dto.planName && { name: dto.planName }),
             ...(dto.features && { description: dto.features }),
-            ...(dto.duration && { 
-              metadata: { duration: dto.duration.toString() } 
-            }),
+            metadata: {
+              duration: (dto.duration || existingPlan.duration).toString(),
+              role: dto.role || existingPlan.role,
+            },
           });
         }
 
@@ -220,7 +224,6 @@ export class SubscriptionPlansService {
           const newPrice = dto.price || existingPlan.price;
           const newDuration = dto.duration || existingPlan.duration;
 
-          // Determine interval based on duration
           let interval: 'day' | 'week' | 'month' | 'year' = 'month';
           let intervalCount = 1;
 
@@ -248,10 +251,10 @@ export class SubscriptionPlansService {
             },
             metadata: {
               duration: newDuration.toString(),
+              role: dto.role || existingPlan.role,
             },
           });
 
-          // Archive old price (don't delete, as existing subscriptions might use it)
           await this.stripe.prices.update(existingPlan.stripePriceId, {
             active: false,
           });
@@ -268,6 +271,7 @@ export class SubscriptionPlansService {
           ...(dto.price && { price: dto.price }),
           ...(dto.duration && { duration: dto.duration }),
           ...(dto.features && { features: dto.features }),
+          ...(dto.role && { role: dto.role }),
           stripePriceId: newStripePriceId,
         },
         include: {
@@ -284,7 +288,7 @@ export class SubscriptionPlansService {
       return {
         ...updatedPlan,
         message: 'Subscription plan updated successfully',
-        note: dto.price 
+        note: dto.price
           ? 'New price will apply to new subscriptions. Existing subscriptions will continue at their current price until renewal.'
           : undefined,
       };
@@ -298,9 +302,6 @@ export class SubscriptionPlansService {
 
   /**
    * Delete (soft delete) a subscription plan
-   * - Sets expiredAt date
-   * - Cannot delete if there are active subscriptions
-   * - Archives the plan in Stripe
    */
   async deletePlan(id: string) {
     const plan = await this.prisma.subscriptionPlan.findUnique({
@@ -323,12 +324,10 @@ export class SubscriptionPlansService {
       throw new NotFoundException('Subscription plan not found');
     }
 
-    // Check if already expired
     if (plan.expiredAt) {
       throw new BadRequestException('Plan is already deleted');
     }
 
-    // Check if there are active subscriptions
     if (plan.subscriptions.length > 0) {
       throw new BadRequestException(
         `Cannot delete plan with ${plan.subscriptions.length} active subscription(s). Please wait for subscriptions to expire or cancel them first.`
@@ -336,20 +335,17 @@ export class SubscriptionPlansService {
     }
 
     try {
-      // Archive price in Stripe
       if (plan.stripePriceId) {
         await this.stripe.prices.update(plan.stripePriceId, {
           active: false,
         });
 
-        // Also archive the product
         const stripePrice = await this.stripe.prices.retrieve(plan.stripePriceId);
         await this.stripe.products.update(stripePrice.product as string, {
           active: false,
         });
       }
 
-      // Soft delete by setting expiredAt
       const deletedPlan = await this.prisma.subscriptionPlan.update({
         where: { id },
         data: {
@@ -386,20 +382,17 @@ export class SubscriptionPlansService {
     }
 
     try {
-      // Reactivate price in Stripe
       if (plan.stripePriceId) {
         await this.stripe.prices.update(plan.stripePriceId, {
           active: true,
         });
 
-        // Also reactivate the product
         const stripePrice = await this.stripe.prices.retrieve(plan.stripePriceId);
         await this.stripe.products.update(stripePrice.product as string, {
           active: true,
         });
       }
 
-      // Remove expiredAt
       const restoredPlan = await this.prisma.subscriptionPlan.update({
         where: { id },
         data: {
