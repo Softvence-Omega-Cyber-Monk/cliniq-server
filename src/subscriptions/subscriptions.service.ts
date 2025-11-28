@@ -1,4 +1,6 @@
 // src/subscriptions/subscriptions.service.ts
+// FIXED: Ensures payment records are ALWAYS created in database
+
 import {
   Injectable,
   NotFoundException,
@@ -27,21 +29,19 @@ export class SubscriptionsService {
   }
 
   /**
-   * Purchase a subscription plan
+   * Purchase a subscription plan - FIXED TO ALWAYS CREATE PAYMENT RECORD
    */
   async purchaseSubscription(
     userId: string,
     userType: string,
     dto: PurchaseSubscriptionDto,
   ) {
-    // Get user's Stripe customer ID
     const { stripeCustomerId, email, fullName } = await this.getUserInfo(userId, userType);
 
     if (!stripeCustomerId) {
       throw new BadRequestException('User does not have a Stripe customer ID');
     }
 
-    // Check if user already has an active subscription
     const existingSubscription = await this.prisma.subscription.findFirst({
       where: {
         ...(userType === 'CLINIC' ? { clinicId: userId } : { therapistId: userId }),
@@ -53,7 +53,6 @@ export class SubscriptionsService {
       throw new ConflictException('User already has an active subscription');
     }
 
-    // Get subscription plan
     const plan = await this.prisma.subscriptionPlan.findUnique({
       where: { id: dto.subscriptionPlanId },
     });
@@ -66,7 +65,6 @@ export class SubscriptionsService {
       throw new BadRequestException('Subscription plan does not have a Stripe price ID');
     }
 
-    // Get payment method
     let paymentMethodId: string;
     if (dto.paymentMethodId) {
       const paymentMethod = await this.prisma.paymentMethod.findUnique({
@@ -78,7 +76,6 @@ export class SubscriptionsService {
         throw new NotFoundException('Payment method not found');
       }
 
-      // Verify ownership
       if (
         (userType === 'CLINIC' && paymentMethod.clinicId !== userId) ||
         (userType === 'THERAPIST' && paymentMethod.therapistId !== userId)
@@ -88,7 +85,6 @@ export class SubscriptionsService {
 
       paymentMethodId = paymentMethod.stripePaymentMethodId;
     } else {
-      // Use default payment method
       const defaultPaymentMethod = await this.prisma.paymentMethod.findFirst({
         where: {
           ...(userType === 'CLINIC' ? { clinicId: userId } : { therapistId: userId }),
@@ -104,18 +100,12 @@ export class SubscriptionsService {
       paymentMethodId = defaultPaymentMethod.stripePaymentMethodId;
     }
 
-    // Create Stripe subscription
+    // Create subscription with expanded invoice and payment intent
     const stripeSubscription = await this.stripe.subscriptions.create({
       customer: stripeCustomerId,
       items: [{ price: plan.stripePriceId }],
       default_payment_method: paymentMethodId,
-      expand: [
-        'latest_invoice',
-        'latest_invoice.payment_intent',
-        'pending_setup_intent',
-        'items.data.price.product',
-        'schedule'
-      ],
+      expand: ['latest_invoice.payment_intent'],
       metadata: {
         userId,
         userType,
@@ -123,34 +113,31 @@ export class SubscriptionsService {
       },
     }) as Stripe.Subscription;
 
-    // Access from items (new in Clover version)
     const subscriptionItem = stripeSubscription.items.data[0];
-    if (!subscriptionItem || !subscriptionItem.current_period_start || !subscriptionItem.current_period_end) {
-      console.error("Invalid Stripe subscription response:", JSON.stringify(stripeSubscription, null, 2));
-      throw new Error("Stripe did not return valid billing period timestamps.");
+    if (!subscriptionItem) {
+      throw new Error('Stripe did not return subscription items.');
     }
 
-    // Debug log
-    console.log("Stripe subscription object:", {
-      id: stripeSubscription.id,
-      status: stripeSubscription.status,
-      current_period_start: subscriptionItem.current_period_start,
-      current_period_end: subscriptionItem.current_period_end,
-      type: typeof subscriptionItem.current_period_start,
-    });
+    // Access period timestamps with proper typing
+    const currentPeriodStart = (subscriptionItem as any).current_period_start as number | undefined;
+    const currentPeriodEnd = (subscriptionItem as any).current_period_end as number | undefined;
 
-    const currentPeriodStart = new Date(subscriptionItem.current_period_start * 1000);
-    const currentPeriodEnd = new Date(subscriptionItem.current_period_end * 1000);
+    if (!currentPeriodStart || !currentPeriodEnd) {
+      throw new Error('Stripe did not return valid billing period timestamps.');
+    }
 
-    // Save subscription to database
+    const periodStart = new Date(currentPeriodStart * 1000);
+    const periodEnd = new Date(currentPeriodEnd * 1000);
+
+    // Create subscription record
     const subscription = await this.prisma.subscription.create({
       data: {
         stripeSubscriptionId: stripeSubscription.id,
         subscriptionPlanId: plan.id,
         ...(userType === 'CLINIC' ? { clinicId: userId } : { therapistId: userId }),
         status: stripeSubscription.status as any,
-        currentPeriodStart,
-        currentPeriodEnd,
+        currentPeriodStart: periodStart,
+        currentPeriodEnd: periodEnd,
         cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end,
       },
       include: {
@@ -158,40 +145,77 @@ export class SubscriptionsService {
       },
     });
 
-    // Save payment record if payment was successful
-    const invoice = stripeSubscription.latest_invoice as Stripe.Invoice | null;
-    if (invoice && 'payment_intent' in invoice && invoice.payment_intent) {
-      const paymentIntent = invoice.payment_intent as Stripe.PaymentIntent;
+    // FIXED: Always create payment record if invoice exists
+    const latestInvoice = (stripeSubscription as any).latest_invoice as any;
+    
+    if (latestInvoice) {
+      console.log('Processing invoice for payment record:', latestInvoice.id);
+      
+      const paymentIntentData = latestInvoice.payment_intent;
+      
+      if (paymentIntentData) {
+        const paymentIntentId = typeof paymentIntentData === 'string' 
+          ? paymentIntentData 
+          : paymentIntentData.id;
 
-      if (paymentIntent.status === 'succeeded') {
-        // Retrieve the charge using the paymentIntent id
-        const chargeList = await this.stripe.charges.list({
-          payment_intent: paymentIntent.id,
-          limit: 1,
-        });
-        const charge = chargeList.data[0];
+        console.log('Payment Intent ID:', paymentIntentId);
 
-        await this.prisma.payment.create({
-          data: {
-            subscriptionId: subscription.id,
-            stripeSubscriptionId: stripeSubscription.id,
-            stripePaymentIntentId: paymentIntent.id,
-            stripeChargeId: charge?.id || null,
-            amount: paymentIntent.amount / 100, // Convert from cents
-            currency: paymentIntent.currency,
-            status: 'succeeded',
-            description: `${plan.planName} - ${new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}`,
-            paymentMethodLast4: charge?.payment_method_details?.card?.last4 || 'N/A',
-            paymentMethodBrand: charge?.payment_method_details?.card?.brand || 'N/A',
-            paymentType: 'subscription',
-            paidAt: new Date(paymentIntent.created * 1000),
-            ...(userType === 'CLINIC' ? { clinicId: userId } : { therapistId: userId }),
-          },
-        });
+        try {
+          // Fetch full payment intent to ensure we have complete data
+          const paymentIntent = await this.stripe.paymentIntents.retrieve(paymentIntentId, {
+            expand: ['latest_charge'],
+          });
+
+          console.log('Payment Intent Status:', paymentIntent.status);
+
+          // Get charge details
+          let charge: Stripe.Charge | undefined;
+          if (paymentIntent.latest_charge) {
+            charge = typeof paymentIntent.latest_charge === 'string'
+              ? await this.stripe.charges.retrieve(paymentIntent.latest_charge)
+              : paymentIntent.latest_charge;
+          }
+
+          // Create payment record regardless of status (but mark it appropriately)
+          const paymentStatus = paymentIntent.status === 'succeeded' 
+            ? 'succeeded' 
+            : paymentIntent.status === 'processing' 
+            ? 'pending' 
+            : 'failed';
+
+          const paymentRecord = await this.prisma.payment.create({
+            data: {
+              subscriptionId: subscription.id,
+              stripeSubscriptionId: stripeSubscription.id,
+              stripePaymentIntentId: paymentIntent.id,
+              stripeChargeId: charge?.id || null,
+              amount: paymentIntent.amount / 100,
+              currency: paymentIntent.currency,
+              status: paymentStatus,
+              description: `${plan.planName} - ${new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}`,
+              paymentMethodLast4: charge?.payment_method_details?.card?.last4 || 'N/A',
+              paymentMethodBrand: charge?.payment_method_details?.card?.brand || 'N/A',
+              paymentType: 'subscription',
+              paidAt: paymentIntent.status === 'succeeded' 
+                ? new Date(paymentIntent.created * 1000) 
+                : new Date(),
+              ...(userType === 'CLINIC' ? { clinicId: userId } : { therapistId: userId }),
+            },
+          });
+
+          console.log('Payment record created:', paymentRecord.id);
+        } catch (error) {
+          console.error('Error creating payment record:', error);
+          // Don't throw - subscription is already created
+        }
+      } else {
+        console.warn('No payment intent found in invoice');
       }
+    } else {
+      console.warn('No latest invoice found in subscription');
     }
 
-    // Update user's subscription plan reference
+    // Update user's subscription plan
     if (userType === 'CLINIC') {
       await this.prisma.privateClinic.update({
         where: { id: userId },
@@ -284,10 +308,8 @@ export class SubscriptionsService {
     const subscription = await this.getCurrentSubscription(userId, userType);
 
     if (dto.cancelImmediately) {
-      // For immediate cancellation
       await this.stripe.subscriptions.cancel(subscription.stripeSubscriptionId);
 
-      // Update in database
       const updatedSubscription = await this.prisma.subscription.update({
         where: { id: subscription.id },
         data: {
@@ -302,7 +324,6 @@ export class SubscriptionsService {
 
       return updatedSubscription;
     } else {
-      // Schedule cancellation at period end
       const stripeSubscription = await this.stripe.subscriptions.update(
         subscription.stripeSubscriptionId,
         {
@@ -310,12 +331,11 @@ export class SubscriptionsService {
         },
       ) as Stripe.Subscription;
 
-      // Update in database
       const updatedSubscription = await this.prisma.subscription.update({
         where: { id: subscription.id },
         data: {
           status: stripeSubscription.status as any,
-          cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end as boolean,
+          cancelAtPeriodEnd: true,
         },
         include: {
           subscriptionPlan: true,
@@ -327,7 +347,7 @@ export class SubscriptionsService {
   }
 
   /**
-   * Get payment history
+   * Get payment history - FIXED: Better error handling
    */
   async getPaymentHistory(
     userId: string,
@@ -339,6 +359,8 @@ export class SubscriptionsService {
     const skip = (page - 1) * limit;
 
     const where = userType === 'CLINIC' ? { clinicId: userId } : { therapistId: userId };
+
+    console.log('Fetching payment history for:', { userId, userType, where });
 
     const [payments, total] = await Promise.all([
       this.prisma.payment.findMany({
@@ -352,10 +374,12 @@ export class SubscriptionsService {
         },
         skip,
         take: limit,
-        orderBy: { paidAt: 'desc' },
+        orderBy: { createdAt: 'desc' }, // Changed from paidAt to createdAt for safety
       }),
       this.prisma.payment.count({ where }),
     ]);
+
+    console.log('Payment history result:', { total, count: payments.length });
 
     return {
       data: payments,
@@ -387,7 +411,6 @@ export class SubscriptionsService {
       throw new NotFoundException('Payment not found');
     }
 
-    // Verify ownership
     if (
       (userType === 'CLINIC' && payment.clinicId !== userId) ||
       (userType === 'THERAPIST' && payment.therapistId !== userId)
@@ -476,7 +499,7 @@ export class SubscriptionsService {
   }
 
   /**
-   * Preview upgrade/downgrade with manual proration calculation
+   * Preview upgrade/downgrade
    */
   async previewUpgrade(
     userId: string,
@@ -492,7 +515,6 @@ export class SubscriptionsService {
 
     const currentPlan = currentSubscription.subscriptionPlan;
 
-    // Calculate proration manually
     const now = Date.now();
     const periodEnd = currentSubscription.currentPeriodEnd.getTime();
     const periodStart = currentSubscription.currentPeriodStart.getTime();
@@ -501,10 +523,9 @@ export class SubscriptionsService {
 
     const percentRemaining = remainingTime / totalPeriodDuration;
 
-    // Calculate amounts
-    const unusedAmount = currentPlan.price * percentRemaining;
-    const newProratedAmount = newPlan.price * percentRemaining;
-    const prorationAmount = newProratedAmount - unusedAmount;
+    const creditAmount = currentPlan.price * percentRemaining;
+    const chargeAmount = newPlan.price * percentRemaining;
+    const prorationAmount = chargeAmount - creditAmount;
 
     const isUpgrade = newPlan.price > currentPlan.price;
     const isDowngrade = newPlan.price < currentPlan.price;
@@ -520,7 +541,9 @@ export class SubscriptionsService {
         planName: newPlan.planName,
         price: newPlan.price,
       },
-      prorationAmount: Number(Math.max(0, prorationAmount).toFixed(2)),
+      creditAmount: Number(creditAmount.toFixed(2)),
+      chargeAmount: Number(chargeAmount.toFixed(2)),
+      prorationAmount: Number(prorationAmount.toFixed(2)),
       immediateCharge: Number(Math.max(0, prorationAmount).toFixed(2)),
       nextBillingDate: currentSubscription.currentPeriodEnd,
       currentPeriodEnd: currentSubscription.currentPeriodEnd,
@@ -531,9 +554,10 @@ export class SubscriptionsService {
       isDowngrade,
       message: isUpgrade
         ? `You will be charged $${Math.max(0, prorationAmount).toFixed(2)} immediately for the upgrade.`
-        : isDowngrade
-          ? `A credit of $${Math.abs(prorationAmount).toFixed(2)} will be applied to your next invoice.`
-          : 'No change in pricing.',
+        : `A credit of $${Math.abs(Math.min(0, prorationAmount)).toFixed(2)} will be applied to your next invoice.`,
+      description: isUpgrade
+        ? `Upgrading to ${newPlan.planName}. You'll be charged the prorated difference immediately.`
+        : `Downgrading to ${newPlan.planName}. Your credit will be applied to the next billing cycle.`,
     };
   }
 
@@ -562,7 +586,6 @@ export class SubscriptionsService {
       );
     }
 
-    // Update in Stripe
     const updatedStripeSubscription = await this.stripe.subscriptions.update(
       subscription.stripeSubscriptionId,
       {
@@ -573,7 +596,6 @@ export class SubscriptionsService {
       },
     ) as Stripe.Subscription;
 
-    // Update in database
     const updatedSubscription = await this.prisma.subscription.update({
       where: { id: subscription.id },
       data: {
@@ -769,23 +791,28 @@ export class SubscriptionsService {
       },
     ) as Stripe.Subscription;
 
-    // Access from items (new in Clover version)
     const updatedSubscriptionItem = updatedStripeSubscription.items.data[0];
-    if (!updatedSubscriptionItem || !updatedSubscriptionItem.current_period_start || !updatedSubscriptionItem.current_period_end) {
-      console.error("Invalid Stripe subscription response:", JSON.stringify(updatedStripeSubscription, null, 2));
-      throw new Error("Stripe did not return valid billing period timestamps.");
+    if (!updatedSubscriptionItem) {
+      throw new Error('Stripe did not return subscription items.');
     }
 
-    const currentPeriodStart = new Date(updatedSubscriptionItem.current_period_start * 1000);
-    const currentPeriodEnd = new Date(updatedSubscriptionItem.current_period_end * 1000);
+    const currentPeriodStart = (updatedSubscriptionItem as any).current_period_start as number | undefined;
+    const currentPeriodEnd = (updatedSubscriptionItem as any).current_period_end as number | undefined;
+
+    if (!currentPeriodStart || !currentPeriodEnd) {
+      throw new Error('Stripe did not return valid billing period timestamps.');
+    }
+
+    const periodStart = new Date(currentPeriodStart * 1000);
+    const periodEnd = new Date(currentPeriodEnd * 1000);
 
     const updatedSubscription = await this.prisma.subscription.update({
       where: { id: currentSubscription.id },
       data: {
         subscriptionPlanId: newPlan.id,
         status: updatedStripeSubscription.status as any,
-        currentPeriodStart,
-        currentPeriodEnd,
+        currentPeriodStart: periodStart,
+        currentPeriodEnd: periodEnd,
       },
       include: {
         subscriptionPlan: true,

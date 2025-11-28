@@ -1,3 +1,6 @@
+// ==========================================
+// FILE 1: webhooks.service.ts (FIXED)
+// ==========================================
 // src/subscriptions/webhooks.service.ts
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -15,7 +18,7 @@ export class WebhooksService {
     private configService: ConfigService,
   ) {
     this.stripe = new Stripe(this.configService.get<string>('STRIPE_SECRET_KEY') || '', {
-      apiVersion: '2025-11-17.clover',
+      apiVersion: '2025-11-17.clover' as any,
     });
     this.webhookSecret = this.configService.get<string>('STRIPE_WEBHOOK_SECRET') || '';
   }
@@ -24,7 +27,6 @@ export class WebhooksService {
     let event: Stripe.Event;
 
     try {
-      // Verify webhook signature
       event = this.stripe.webhooks.constructEvent(
         rawBody,
         signature,
@@ -37,7 +39,6 @@ export class WebhooksService {
 
     this.logger.log(`Received webhook event: ${event.type}`);
 
-    // Handle different event types
     try {
       switch (event.type) {
         case 'invoice.payment_succeeded':
@@ -72,21 +73,18 @@ export class WebhooksService {
   }
 
   /**
-   * Handle successful payment
+   * Handle successful payment - FIXED to avoid duplicates
    */
   private async handleInvoicePaymentSucceeded(invoice: Stripe.Invoice) {
     this.logger.log(`Processing payment success for invoice: ${invoice.id}`);
 
-    const invoiceAny = invoice as any;
-
-    if (!invoiceAny.subscription) {
+    const subscriptionId = (invoice as any).subscription as string | null;
+    
+    if (!subscriptionId) {
+      this.logger.log('Invoice has no subscription, skipping');
       return;
     }
 
-    const subscriptionId = invoiceAny.subscription as string;
-    const paymentIntent = invoiceAny.payment_intent as any;
-
-    // Get subscription from database
     const subscription = await this.prisma.subscription.findUnique({
       where: { stripeSubscriptionId: subscriptionId },
       include: { subscriptionPlan: true },
@@ -97,23 +95,52 @@ export class WebhooksService {
       return;
     }
 
-    // Check if payment already exists
-    const existingPayment = await this.prisma.payment.findUnique({
-      where: { stripePaymentIntentId: paymentIntent.id },
-    });
-
-    if (existingPayment) {
-      this.logger.log(`Payment already recorded: ${paymentIntent.id}`);
+    const paymentIntentId = (invoice as any).payment_intent as string | null;
+    
+    if (!paymentIntentId) {
+      this.logger.warn(`Invoice ${invoice.id} has no payment_intent`);
       return;
     }
 
-    // Get payment method details
-    const charge = invoiceAny.charge as any;
-    const paymentMethodDetails = charge?.payment_method_details;
+    // Check if payment already exists
+    const existingPayment = await this.prisma.payment.findUnique({
+      where: { stripePaymentIntentId: paymentIntentId },
+    });
 
-    // Get paid_at timestamp safely
-    const paidAt = invoiceAny.status_transitions?.paid_at 
-      ? new Date(invoiceAny.status_transitions.paid_at * 1000)
+    if (existingPayment) {
+      this.logger.log(`Payment already recorded: ${paymentIntentId}, updating status if needed`);
+      
+      // Update payment status if it was pending
+      if (existingPayment.status !== 'succeeded') {
+        await this.prisma.payment.update({
+          where: { id: existingPayment.id },
+          data: {
+            status: 'succeeded',
+            paidAt: new Date(),
+          },
+        });
+        this.logger.log(`Payment status updated to succeeded: ${paymentIntentId}`);
+      }
+      return;
+    }
+
+    // Fetch full payment intent details
+    const paymentIntent = await this.stripe.paymentIntents.retrieve(paymentIntentId, {
+      expand: ['latest_charge'],
+    });
+
+    // Get charge details
+    let charge: Stripe.Charge | undefined;
+    if (paymentIntent.latest_charge) {
+      charge = typeof paymentIntent.latest_charge === 'string'
+        ? await this.stripe.charges.retrieve(paymentIntent.latest_charge)
+        : paymentIntent.latest_charge;
+    }
+
+    // Get paid timestamp
+    const statusTransitions = (invoice as any).status_transitions as { paid_at?: number } | undefined;
+    const paidAt = statusTransitions?.paid_at 
+      ? new Date(statusTransitions.paid_at * 1000)
       : new Date();
 
     // Create payment record
@@ -121,14 +148,14 @@ export class WebhooksService {
       data: {
         subscriptionId: subscription.id,
         stripeSubscriptionId: subscriptionId,
-        stripePaymentIntentId: paymentIntent.id,
+        stripePaymentIntentId: paymentIntentId,
         stripeChargeId: charge?.id || null,
-        amount: invoiceAny.amount_paid / 100, // Convert from cents
-        currency: invoiceAny.currency,
+        amount: invoice.amount_paid / 100,
+        currency: invoice.currency,
         status: 'succeeded',
-        description: invoiceAny.description || `${subscription.subscriptionPlan.planName} - Payment`,
-        paymentMethodLast4: paymentMethodDetails?.card?.last4 || 'N/A',
-        paymentMethodBrand: paymentMethodDetails?.card?.brand || 'N/A',
+        description: invoice.description || `${subscription.subscriptionPlan.planName} - Payment`,
+        paymentMethodLast4: charge?.payment_method_details?.card?.last4 || 'N/A',
+        paymentMethodBrand: charge?.payment_method_details?.card?.brand || 'N/A',
         paymentType: 'subscription',
         paidAt: paidAt,
         ...(subscription.clinicId ? { clinicId: subscription.clinicId } : {}),
@@ -136,7 +163,7 @@ export class WebhooksService {
       },
     });
 
-    this.logger.log(`Payment recorded successfully: ${paymentIntent.id}`);
+    this.logger.log(`Payment recorded successfully: ${paymentIntentId}`);
   }
 
   /**
@@ -145,23 +172,30 @@ export class WebhooksService {
   private async handleInvoicePaymentFailed(invoice: Stripe.Invoice) {
     this.logger.log(`Processing payment failure for invoice: ${invoice.id}`);
 
-    const invoiceAny = invoice as any;
+    const subscriptionId = (invoice as any).subscription as string | null;
 
-    if (!invoiceAny.subscription) {
+    if (!subscriptionId) {
+      this.logger.log('Invoice has no subscription, skipping');
       return;
     }
 
-    const subscriptionId = invoiceAny.subscription as string;
-
-    // Update subscription status
     await this.prisma.subscription.updateMany({
       where: { stripeSubscriptionId: subscriptionId },
       data: { status: 'past_due' },
     });
 
-    // TODO: Send notification email to user about failed payment
-
     this.logger.log(`Subscription marked as past_due: ${subscriptionId}`);
+
+    // Also update payment record if it exists
+    const paymentIntentId = (invoice as any).payment_intent as string | null;
+    
+    if (paymentIntentId) {
+      await this.prisma.payment.updateMany({
+        where: { stripePaymentIntentId: paymentIntentId },
+        data: { status: 'failed' },
+      });
+      this.logger.log(`Payment marked as failed: ${paymentIntentId}`);
+    }
   }
 
   /**
@@ -170,17 +204,33 @@ export class WebhooksService {
   private async handleSubscriptionUpdated(stripeSubscription: Stripe.Subscription) {
     this.logger.log(`Processing subscription update: ${stripeSubscription.id}`);
 
-    const subscriptionAny = stripeSubscription as any;
+    const subscriptionItem = stripeSubscription.items.data[0];
+    
+    if (!subscriptionItem) {
+      this.logger.error('No subscription items found');
+      return;
+    }
+
+    const currentPeriodStart = (subscriptionItem as any).current_period_start as number | undefined;
+    const currentPeriodEnd = (subscriptionItem as any).current_period_end as number | undefined;
+
+    if (!currentPeriodStart || !currentPeriodEnd) {
+      this.logger.error('Invalid subscription item period data');
+      return;
+    }
+
+    const periodStart = new Date(currentPeriodStart * 1000);
+    const periodEnd = new Date(currentPeriodEnd * 1000);
 
     await this.prisma.subscription.updateMany({
       where: { stripeSubscriptionId: stripeSubscription.id },
       data: {
-        status: subscriptionAny.status as any,
-        currentPeriodStart: new Date(subscriptionAny.current_period_start * 1000),
-        currentPeriodEnd: new Date(subscriptionAny.current_period_end * 1000),
-        cancelAtPeriodEnd: subscriptionAny.cancel_at_period_end,
-        ...(subscriptionAny.canceled_at && {
-          canceledAt: new Date(subscriptionAny.canceled_at * 1000),
+        status: stripeSubscription.status as any,
+        currentPeriodStart: periodStart,
+        currentPeriodEnd: periodEnd,
+        cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end,
+        ...(stripeSubscription.canceled_at && {
+          canceledAt: new Date(stripeSubscription.canceled_at * 1000),
         }),
       },
     });
@@ -211,6 +261,5 @@ export class WebhooksService {
   private async handleSubscriptionCreated(stripeSubscription: Stripe.Subscription) {
     this.logger.log(`Processing subscription creation: ${stripeSubscription.id}`);
     // Usually handled by purchaseSubscription endpoint
-    // But can be used for additional processing if needed
   }
 }
