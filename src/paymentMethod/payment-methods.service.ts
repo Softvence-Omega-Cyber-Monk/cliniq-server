@@ -6,13 +6,24 @@ import {
   BadRequestException,
   ConflictException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreatePaymentMethodDto } from './dto/create-payment-method.dto';
 import { UpdatePaymentMethodDto } from './dto/update-payment-method.dto';
+import Stripe from 'stripe';
 
 @Injectable()
 export class PaymentMethodsService {
-  constructor(private prisma: PrismaService) {}
+  private stripe: Stripe;
+
+  constructor(
+    private prisma: PrismaService,
+    private configService: ConfigService,
+  ) {
+    this.stripe = new Stripe(this.configService.get<string>('STRIPE_SECRET_KEY') || '', {
+      apiVersion: '2025-11-17.clover',
+    });
+  }
 
   /**
    * Create a new payment method (card) for subscription payments
@@ -66,11 +77,35 @@ export class PaymentMethodsService {
       throw new BadRequestException('User does not have a Stripe customer ID');
     }
 
+    try {
+      // CRITICAL FIX: Attach the payment method to the customer in Stripe
+      await this.stripe.paymentMethods.attach(dto.stripePaymentMethodId, {
+        customer: stripeCustomerId,
+      });
+
+      // If this is the first payment method, set it as default in Stripe
+      if (isDefault) {
+        await this.stripe.customers.update(stripeCustomerId, {
+          invoice_settings: {
+            default_payment_method: dto.stripePaymentMethodId,
+          },
+        });
+      }
+    } catch (error: any) {
+      // Handle Stripe errors
+      if (error.code === 'resource_missing') {
+        throw new BadRequestException('Invalid payment method ID');
+      }
+      throw new BadRequestException(
+        `Failed to attach payment method: ${error.message}`,
+      );
+    }
+
     // Create payment method based on user type
     const paymentMethodData = {
       stripePaymentMethodId: dto.stripePaymentMethodId,
       stripeCustomerId,
-      cardHolderName: dto.cardHolderName, // Fixed: matches schema field name
+      cardHolderName: dto.cardHolderName,
       cardLast4: dto.cardLast4,
       cardBrand: dto.cardBrand,
       expiryMonth: dto.expiryMonth,
@@ -165,15 +200,36 @@ export class PaymentMethodsService {
     dto: UpdatePaymentMethodDto,
   ) {
     // Verify ownership
-    await this.getPaymentMethodById(userId, userType, paymentMethodId);
+    const paymentMethod = await this.getPaymentMethodById(userId, userType, paymentMethodId);
 
-    const paymentMethod = await this.prisma.paymentMethod.update({
+    // Update in Stripe if billing details changed
+    try {
+      await this.stripe.paymentMethods.update(paymentMethod.stripePaymentMethodId, {
+        billing_details: {
+          ...(dto.cardHolderName && { name: dto.cardHolderName }),
+          address: {
+            ...(dto.billingAddressLine1 && { line1: dto.billingAddressLine1 }),
+            ...(dto.billingAddressLine2 !== undefined && { line2: dto.billingAddressLine2 }),
+            ...(dto.billingCity && { city: dto.billingCity }),
+            ...(dto.billingState && { state: dto.billingState }),
+            ...(dto.billingPostalCode && { postal_code: dto.billingPostalCode }),
+            ...(dto.billingCountry && { country: dto.billingCountry }),
+          },
+        },
+      });
+    } catch (error: any) {
+      throw new BadRequestException(
+        `Failed to update payment method in Stripe: ${error.message}`,
+      );
+    }
+
+    const updatedPaymentMethod = await this.prisma.paymentMethod.update({
       where: { id: paymentMethodId },
       data: dto,
       select: this.getPaymentMethodSelect(),
     });
 
-    return paymentMethod;
+    return updatedPaymentMethod;
   }
 
   /**
@@ -190,6 +246,14 @@ export class PaymentMethodsService {
       userType,
       paymentMethodId,
     );
+
+    // Detach from Stripe
+    try {
+      await this.stripe.paymentMethods.detach(paymentMethod.stripePaymentMethodId);
+    } catch (error: any) {
+      // Continue even if Stripe detachment fails (payment method might already be detached)
+      console.error('Failed to detach payment method from Stripe:', error.message);
+    }
 
     // If deleting the default payment method, set another as default
     if (paymentMethod.isDefault) {
@@ -208,6 +272,16 @@ export class PaymentMethodsService {
           where: { id: nextPaymentMethod.id },
           data: { isDefault: true },
         });
+
+        // Update in Stripe
+        const userRecord = await this.getUserStripeCustomerId(userId, userType);
+        if (userRecord) {
+          await this.stripe.customers.update(userRecord, {
+            invoice_settings: {
+              default_payment_method: nextPaymentMethod.stripePaymentMethodId,
+            },
+          });
+        }
       }
     }
 
@@ -227,7 +301,7 @@ export class PaymentMethodsService {
     paymentMethodId: string,
   ) {
     // Verify ownership
-    await this.getPaymentMethodById(userId, userType, paymentMethodId);
+    const paymentMethod = await this.getPaymentMethodById(userId, userType, paymentMethodId);
 
     const where =
       userType === 'CLINIC' ? { clinicId: userId } : { therapistId: userId };
@@ -239,13 +313,26 @@ export class PaymentMethodsService {
     });
 
     // Set new default
-    const paymentMethod = await this.prisma.paymentMethod.update({
+    const updatedPaymentMethod = await this.prisma.paymentMethod.update({
       where: { id: paymentMethodId },
       data: { isDefault: true },
       select: this.getPaymentMethodSelect(),
     });
 
-    return paymentMethod;
+    // Update in Stripe
+    try {
+      await this.stripe.customers.update(paymentMethod.stripeCustomerId, {
+        invoice_settings: {
+          default_payment_method: paymentMethod.stripePaymentMethodId,
+        },
+      });
+    } catch (error: any) {
+      throw new BadRequestException(
+        `Failed to set default payment method in Stripe: ${error.message}`,
+      );
+    }
+
+    return updatedPaymentMethod;
   }
 
   /**
@@ -299,12 +386,34 @@ export class PaymentMethodsService {
   }
 
   /**
+   * Helper: Get Stripe customer ID for a user
+   */
+  private async getUserStripeCustomerId(
+    userId: string,
+    userType: string,
+  ): Promise<string | null> {
+    if (userType === 'CLINIC') {
+      const clinic = await this.prisma.privateClinic.findUnique({
+        where: { id: userId },
+        select: { stripeCustomerId: true },
+      });
+      return clinic?.stripeCustomerId || null;
+    } else {
+      const therapist = await this.prisma.therapist.findUnique({
+        where: { id: userId },
+        select: { stripeCustomerId: true },
+      });
+      return therapist?.stripeCustomerId || null;
+    }
+  }
+
+  /**
    * Helper: Get select fields for payment method (excludes Stripe IDs for security)
    */
   private getPaymentMethodSelect() {
     return {
       id: true,
-      cardHolderName: true, // Matches schema field name
+      cardHolderName: true,
       cardLast4: true,
       cardBrand: true,
       expiryMonth: true,
@@ -318,6 +427,8 @@ export class PaymentMethodsService {
       isDefault: true,
       clinicId: true,
       therapistId: true,
+      stripePaymentMethodId: true, // Include this for internal operations
+      stripeCustomerId: true, // Include this for internal operations
       createdAt: true,
       updatedAt: true,
     };

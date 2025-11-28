@@ -1,436 +1,283 @@
-// src/payment-methods/payment-methods.service.ts
+// src/payment-methods/payment-methods.controller.ts
 import {
-  Injectable,
-  NotFoundException,
-  ForbiddenException,
-  BadRequestException,
-  ConflictException,
+  Controller,
+  Get,
+  Post,
+  Put,
+  Delete,
+  Body,
+  Param,
+  UseGuards,
+  Request,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { PrismaService } from '../prisma/prisma.service';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiBearerAuth,
+  ApiParam,
+} from '@nestjs/swagger';
+import { PaymentMethodsService } from './payment-methods.service';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CreatePaymentMethodDto } from './dto/create-payment-method.dto';
 import { UpdatePaymentMethodDto } from './dto/update-payment-method.dto';
-import Stripe from 'stripe';
+import { PaymentMethodResponseDto } from './dto/payment-method-response.dto';
 
-@Injectable()
-export class PaymentMethodsService {
-  private stripe: Stripe;
-
+@ApiTags('Payment Methods')
+@ApiBearerAuth('bearer')
+@UseGuards(JwtAuthGuard)
+@Controller('payment-methods')
+export class PaymentMethodsController {
   constructor(
-    private prisma: PrismaService,
-    private configService: ConfigService,
-  ) {
-    this.stripe = new Stripe(this.configService.get<string>('STRIPE_SECRET_KEY') || '', {
-      apiVersion: '2025-11-17.clover',
-    });
-  }
+    private readonly paymentMethodsService: PaymentMethodsService,
+  ) {}
 
-  /**
-   * Create a new payment method (card) for subscription payments
-   */
+  @Post()
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({
+    summary: 'Add a new payment method for subscription',
+    description:
+      'Save card information for subscription payments via Stripe. The card must be tokenized on the client-side using Stripe.js before sending to this endpoint. The first payment method will be set as default automatically.',
+  })
+  @ApiResponse({
+    status: 201,
+    description: 'Payment method created successfully',
+    type: PaymentMethodResponseDto,
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Validation error or user does not have Stripe customer ID',
+  })
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthorized',
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'User not found',
+  })
+  @ApiResponse({
+    status: 409,
+    description: 'Payment method already exists',
+  })
   async createPaymentMethod(
-    userId: string,
-    userType: string,
-    dto: CreatePaymentMethodDto,
+    @Request() req,
+    @Body() dto: CreatePaymentMethodDto,
   ) {
-    // Check if Stripe payment method already exists
-    const existingPaymentMethod = await this.prisma.paymentMethod.findUnique({
-      where: { stripePaymentMethodId: dto.stripePaymentMethodId },
-    });
-
-    if (existingPaymentMethod) {
-      throw new ConflictException('This payment method has already been added');
-    }
-
-    // Check if this will be the first (default) payment method
-    const existingMethodsCount = await this.getPaymentMethodCount(userId, userType);
-    const isDefault = existingMethodsCount === 0;
-
-    // Validate user exists and get Stripe customer ID
-    let stripeCustomerId: string | null = null;
-
-    if (userType === 'CLINIC') {
-      const clinic = await this.prisma.privateClinic.findUnique({
-        where: { id: userId },
-        select: { stripeCustomerId: true },
-      });
-
-      if (!clinic) {
-        throw new NotFoundException('Clinic not found');
-      }
-
-      stripeCustomerId = clinic.stripeCustomerId;
-    } else if (userType === 'THERAPIST') {
-      const therapist = await this.prisma.therapist.findUnique({
-        where: { id: userId },
-        select: { stripeCustomerId: true },
-      });
-
-      if (!therapist) {
-        throw new NotFoundException('Therapist not found');
-      }
-
-      stripeCustomerId = therapist.stripeCustomerId;
-    }
-
-    if (!stripeCustomerId) {
-      throw new BadRequestException('User does not have a Stripe customer ID');
-    }
-
-    try {
-      // CRITICAL FIX: Attach the payment method to the customer in Stripe
-      await this.stripe.paymentMethods.attach(dto.stripePaymentMethodId, {
-        customer: stripeCustomerId,
-      });
-
-      // If this is the first payment method, set it as default in Stripe
-      if (isDefault) {
-        await this.stripe.customers.update(stripeCustomerId, {
-          invoice_settings: {
-            default_payment_method: dto.stripePaymentMethodId,
-          },
-        });
-      }
-    } catch (error: any) {
-      // Handle Stripe errors
-      if (error.code === 'resource_missing') {
-        throw new BadRequestException('Invalid payment method ID');
-      }
-      throw new BadRequestException(
-        `Failed to attach payment method: ${error.message}`,
-      );
-    }
-
-    // Create payment method based on user type
-    const paymentMethodData = {
-      stripePaymentMethodId: dto.stripePaymentMethodId,
-      stripeCustomerId,
-      cardHolderName: dto.cardHolderName,
-      cardLast4: dto.cardLast4,
-      cardBrand: dto.cardBrand,
-      expiryMonth: dto.expiryMonth,
-      expiryYear: dto.expiryYear,
-      billingAddressLine1: dto.billingAddressLine1,
-      billingAddressLine2: dto.billingAddressLine2,
-      billingCity: dto.billingCity,
-      billingState: dto.billingState,
-      billingPostalCode: dto.billingPostalCode,
-      billingCountry: dto.billingCountry,
-      isDefault,
-    };
-
-    if (userType === 'CLINIC') {
-      const paymentMethod = await this.prisma.paymentMethod.create({
-        data: {
-          ...paymentMethodData,
-          clinicId: userId,
-        },
-        select: this.getPaymentMethodSelect(),
-      });
-
-      return paymentMethod;
-    } else if (userType === 'THERAPIST') {
-      const paymentMethod = await this.prisma.paymentMethod.create({
-        data: {
-          ...paymentMethodData,
-          therapistId: userId,
-        },
-        select: this.getPaymentMethodSelect(),
-      });
-
-      return paymentMethod;
-    }
-
-    throw new BadRequestException('Invalid user type');
-  }
-
-  /**
-   * Get all payment methods for a user
-   */
-  async getPaymentMethods(userId: string, userType: string) {
-    const where =
-      userType === 'CLINIC' ? { clinicId: userId } : { therapistId: userId };
-
-    const paymentMethods = await this.prisma.paymentMethod.findMany({
-      where,
-      select: this.getPaymentMethodSelect(),
-      orderBy: [{ isDefault: 'desc' }, { createdAt: 'desc' }],
-    });
-
-    return paymentMethods;
-  }
-
-  /**
-   * Get a specific payment method by ID
-   */
-  async getPaymentMethodById(
-    userId: string,
-    userType: string,
-    paymentMethodId: string,
-  ) {
-    const paymentMethod = await this.prisma.paymentMethod.findUnique({
-      where: { id: paymentMethodId },
-      select: this.getPaymentMethodSelect(),
-    });
-
-    if (!paymentMethod) {
-      throw new NotFoundException('Payment method not found');
-    }
-
-    // Check if user owns this payment method
-    if (
-      (userType === 'CLINIC' && paymentMethod.clinicId !== userId) ||
-      (userType === 'THERAPIST' && paymentMethod.therapistId !== userId)
-    ) {
-      throw new ForbiddenException(
-        'You do not have permission to access this payment method',
-      );
-    }
-
-    return paymentMethod;
-  }
-
-  /**
-   * Update a payment method (only billing info and expiry)
-   */
-  async updatePaymentMethod(
-    userId: string,
-    userType: string,
-    paymentMethodId: string,
-    dto: UpdatePaymentMethodDto,
-  ) {
-    // Verify ownership
-    const paymentMethod = await this.getPaymentMethodById(userId, userType, paymentMethodId);
-
-    // Update in Stripe if billing details changed
-    try {
-      await this.stripe.paymentMethods.update(paymentMethod.stripePaymentMethodId, {
-        billing_details: {
-          ...(dto.cardHolderName && { name: dto.cardHolderName }),
-          address: {
-            ...(dto.billingAddressLine1 && { line1: dto.billingAddressLine1 }),
-            ...(dto.billingAddressLine2 !== undefined && { line2: dto.billingAddressLine2 }),
-            ...(dto.billingCity && { city: dto.billingCity }),
-            ...(dto.billingState && { state: dto.billingState }),
-            ...(dto.billingPostalCode && { postal_code: dto.billingPostalCode }),
-            ...(dto.billingCountry && { country: dto.billingCountry }),
-          },
-        },
-      });
-    } catch (error: any) {
-      throw new BadRequestException(
-        `Failed to update payment method in Stripe: ${error.message}`,
-      );
-    }
-
-    const updatedPaymentMethod = await this.prisma.paymentMethod.update({
-      where: { id: paymentMethodId },
-      data: dto,
-      select: this.getPaymentMethodSelect(),
-    });
-
-    return updatedPaymentMethod;
-  }
-
-  /**
-   * Delete a payment method
-   */
-  async deletePaymentMethod(
-    userId: string,
-    userType: string,
-    paymentMethodId: string,
-  ) {
-    // Verify ownership
-    const paymentMethod = await this.getPaymentMethodById(
-      userId,
-      userType,
-      paymentMethodId,
+    return this.paymentMethodsService.createPaymentMethod(
+      req.user.sub,
+      req.user.userType,
+      dto,
     );
-
-    // Detach from Stripe
-    try {
-      await this.stripe.paymentMethods.detach(paymentMethod.stripePaymentMethodId);
-    } catch (error: any) {
-      // Continue even if Stripe detachment fails (payment method might already be detached)
-      console.error('Failed to detach payment method from Stripe:', error.message);
-    }
-
-    // If deleting the default payment method, set another as default
-    if (paymentMethod.isDefault) {
-      const where =
-        userType === 'CLINIC'
-          ? { clinicId: userId, id: { not: paymentMethodId } }
-          : { therapistId: userId, id: { not: paymentMethodId } };
-
-      const nextPaymentMethod = await this.prisma.paymentMethod.findFirst({
-        where,
-        orderBy: { createdAt: 'asc' },
-      });
-
-      if (nextPaymentMethod) {
-        await this.prisma.paymentMethod.update({
-          where: { id: nextPaymentMethod.id },
-          data: { isDefault: true },
-        });
-
-        // Update in Stripe
-        const userRecord = await this.getUserStripeCustomerId(userId, userType);
-        if (userRecord) {
-          await this.stripe.customers.update(userRecord, {
-            invoice_settings: {
-              default_payment_method: nextPaymentMethod.stripePaymentMethodId,
-            },
-          });
-        }
-      }
-    }
-
-    await this.prisma.paymentMethod.delete({
-      where: { id: paymentMethodId },
-    });
-
-    return { message: 'Payment method deleted successfully' };
   }
 
-  /**
-   * Set a payment method as default
-   */
-  async setDefaultPaymentMethod(
-    userId: string,
-    userType: string,
-    paymentMethodId: string,
+  @Get()
+  @ApiOperation({
+    summary: 'Get all saved payment methods',
+    description:
+      'Retrieve all saved card information for the authenticated user, ordered by default status and creation date.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'List of payment methods retrieved successfully',
+    type: [PaymentMethodResponseDto],
+  })
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthorized',
+  })
+  async getPaymentMethods(@Request() req) {
+    return this.paymentMethodsService.getPaymentMethods(
+      req.user.sub,
+      req.user.userType,
+    );
+  }
+
+  @Get('default')
+  @ApiOperation({
+    summary: 'Get default payment method',
+    description: 'Retrieve the default payment method that will be used for subscription payments.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Default payment method retrieved successfully',
+    type: PaymentMethodResponseDto,
+  })
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthorized',
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'No default payment method found',
+  })
+  async getDefaultPaymentMethod(@Request() req) {
+    return this.paymentMethodsService.getDefaultPaymentMethod(
+      req.user.sub,
+      req.user.userType,
+    );
+  }
+
+  @Get(':id')
+  @ApiOperation({
+    summary: 'Get payment method by ID',
+    description: 'Retrieve a specific payment method by its ID. Users can only access their own payment methods.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Payment method retrieved successfully',
+    type: PaymentMethodResponseDto,
+  })
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthorized',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Cannot access this payment method',
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Payment method not found',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Payment method ID',
+    example: '123e4567-e89b-12d3-a456-426614174000',
+  })
+  async getPaymentMethodById(@Request() req, @Param('id') id: string) {
+    return this.paymentMethodsService.getPaymentMethodById(
+      req.user.sub,
+      req.user.userType,
+      id,
+    );
+  }
+
+  @Put(':id')
+  @ApiOperation({
+    summary: 'Update payment method',
+    description:
+      'Update payment method details such as billing address, expiry date, or cardholder name. Cannot update card number or Stripe payment method ID.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Payment method updated successfully',
+    type: PaymentMethodResponseDto,
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Validation error',
+  })
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthorized',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Cannot update this payment method',
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Payment method not found',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Payment method ID',
+    example: '123e4567-e89b-12d3-a456-426614174000',
+  })
+  async updatePaymentMethod(
+    @Request() req,
+    @Param('id') id: string,
+    @Body() dto: UpdatePaymentMethodDto,
   ) {
-    // Verify ownership
-    const paymentMethod = await this.getPaymentMethodById(userId, userType, paymentMethodId);
+    return this.paymentMethodsService.updatePaymentMethod(
+      req.user.sub,
+      req.user.userType,
+      id,
+      dto,
+    );
+  }
 
-    const where =
-      userType === 'CLINIC' ? { clinicId: userId } : { therapistId: userId };
-
-    // Remove default from all other payment methods
-    await this.prisma.paymentMethod.updateMany({
-      where,
-      data: { isDefault: false },
-    });
-
-    // Set new default
-    const updatedPaymentMethod = await this.prisma.paymentMethod.update({
-      where: { id: paymentMethodId },
-      data: { isDefault: true },
-      select: this.getPaymentMethodSelect(),
-    });
-
-    // Update in Stripe
-    try {
-      await this.stripe.customers.update(paymentMethod.stripeCustomerId, {
-        invoice_settings: {
-          default_payment_method: paymentMethod.stripePaymentMethodId,
+  @Delete(':id')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Delete payment method',
+    description:
+      'Delete a saved payment method. If deleting the default payment method, another method will be automatically set as default.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Payment method deleted successfully',
+    schema: {
+      properties: {
+        message: {
+          type: 'string',
+          example: 'Payment method deleted successfully',
         },
-      });
-    } catch (error: any) {
-      throw new BadRequestException(
-        `Failed to set default payment method in Stripe: ${error.message}`,
-      );
-    }
-
-    return updatedPaymentMethod;
-  }
-
-  /**
-   * Get the default payment method
-   */
-  async getDefaultPaymentMethod(userId: string, userType: string) {
-    const where =
-      userType === 'CLINIC'
-        ? { clinicId: userId, isDefault: true }
-        : { therapistId: userId, isDefault: true };
-
-    const paymentMethod = await this.prisma.paymentMethod.findFirst({
-      where,
-      select: this.getPaymentMethodSelect(),
-    });
-
-    if (!paymentMethod) {
-      throw new NotFoundException('No default payment method found');
-    }
-
-    return paymentMethod;
-  }
-
-  /**
-   * Get payment method by Stripe Payment Method ID (internal use)
-   */
-  async getPaymentMethodByStripeId(stripePaymentMethodId: string) {
-    const paymentMethod = await this.prisma.paymentMethod.findUnique({
-      where: { stripePaymentMethodId },
-      select: {
-        ...this.getPaymentMethodSelect(),
-        stripePaymentMethodId: true,
-        stripeCustomerId: true,
       },
-    });
-
-    return paymentMethod;
+    },
+  })
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthorized',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Cannot delete this payment method',
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Payment method not found',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Payment method ID',
+    example: '123e4567-e89b-12d3-a456-426614174000',
+  })
+  async deletePaymentMethod(@Request() req, @Param('id') id: string) {
+    return this.paymentMethodsService.deletePaymentMethod(
+      req.user.sub,
+      req.user.userType,
+      id,
+    );
   }
 
-  /**
-   * Helper: Get payment method count for a user
-   */
-  private async getPaymentMethodCount(
-    userId: string,
-    userType: string,
-  ): Promise<number> {
-    const where =
-      userType === 'CLINIC' ? { clinicId: userId } : { therapistId: userId };
-
-    return this.prisma.paymentMethod.count({ where });
-  }
-
-  /**
-   * Helper: Get Stripe customer ID for a user
-   */
-  private async getUserStripeCustomerId(
-    userId: string,
-    userType: string,
-  ): Promise<string | null> {
-    if (userType === 'CLINIC') {
-      const clinic = await this.prisma.privateClinic.findUnique({
-        where: { id: userId },
-        select: { stripeCustomerId: true },
-      });
-      return clinic?.stripeCustomerId || null;
-    } else {
-      const therapist = await this.prisma.therapist.findUnique({
-        where: { id: userId },
-        select: { stripeCustomerId: true },
-      });
-      return therapist?.stripeCustomerId || null;
-    }
-  }
-
-  /**
-   * Helper: Get select fields for payment method (excludes Stripe IDs for security)
-   */
-  private getPaymentMethodSelect() {
-    return {
-      id: true,
-      cardHolderName: true,
-      cardLast4: true,
-      cardBrand: true,
-      expiryMonth: true,
-      expiryYear: true,
-      billingAddressLine1: true,
-      billingAddressLine2: true,
-      billingCity: true,
-      billingState: true,
-      billingPostalCode: true,
-      billingCountry: true,
-      isDefault: true,
-      clinicId: true,
-      therapistId: true,
-      stripePaymentMethodId: true, // Include this for internal operations
-      stripeCustomerId: true, // Include this for internal operations
-      createdAt: true,
-      updatedAt: true,
-    };
+  @Post(':id/set-default')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Set payment method as default',
+    description:
+      'Set a specific payment method as the default for subscription payments. Only one payment method can be default at a time.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Payment method set as default successfully',
+    type: PaymentMethodResponseDto,
+  })
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthorized',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Cannot modify this payment method',
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Payment method not found',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Payment method ID',
+    example: '123e4567-e89b-12d3-a456-426614174000',
+  })
+  async setDefaultPaymentMethod(@Request() req, @Param('id') id: string) {
+    return this.paymentMethodsService.setDefaultPaymentMethod(
+      req.user.sub,
+      req.user.userType,
+      id,
+    );
   }
 }
