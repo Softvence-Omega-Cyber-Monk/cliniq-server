@@ -5,9 +5,10 @@ import { PaymentMethodsController } from './payment-methods.controller';
 import { PaymentMethodsService } from './payment-methods.service';
 import { PrismaModule } from '../prisma/prisma.module';
 import { AuthModule } from '../auth/auth.module';
+import { ConfigModule } from '@nestjs/config';
 
 @Module({
-  imports: [PrismaModule, AuthModule],
+  imports: [PrismaModule, AuthModule, ConfigModule],
   controllers: [PaymentMethodsController],
   providers: [PaymentMethodsService],
   exports: [PaymentMethodsService],
