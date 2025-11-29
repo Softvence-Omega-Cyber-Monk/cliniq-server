@@ -63,6 +63,7 @@ model Therapist {
   availabilityEndTime    DateTime?
   password               String
   stripeCustomerId       String?   @unique
+  status                 String    @default("active")
 
   clinicId String?
   clinic   PrivateClinic? @relation(fields: [clinicId], references: [id])

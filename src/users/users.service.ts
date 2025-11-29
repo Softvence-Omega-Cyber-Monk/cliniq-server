@@ -379,6 +379,8 @@ export class UsersService {
           timeZone: true,
           createdAt: true,
           updatedAt: true,
+          status: true,
+          availableDays: true,
           _count: {
             select: {
               clients: true,
