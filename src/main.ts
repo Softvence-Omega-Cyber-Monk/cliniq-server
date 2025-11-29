@@ -24,7 +24,7 @@ async function bootstrap() {
   );
 
   
- app.setGlobalPrefix('api');
+//  app.setGlobalPrefix('api');
 
   // Swagger configuration
   const config = new DocumentBuilder()
@@ -50,7 +50,7 @@ async function bootstrap() {
     .build();
 
   const document = SwaggerModule.createDocument(app, config);
-  SwaggerModule.setup('-docs', app, document, {
+  SwaggerModule.setup('api-docs', app, document, {
     swaggerOptions: {
       persistAuthorization: true,
       tagsSorter: 'alpha',
