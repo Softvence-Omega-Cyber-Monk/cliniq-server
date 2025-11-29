@@ -16,6 +16,7 @@ services:
       
   db:
     image: postgres
+    version: "16"
     container_name: cliniq-db
     restart: always
     ports:
