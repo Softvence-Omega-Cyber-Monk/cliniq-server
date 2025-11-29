@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  app: 
+    build: .
+    image: imranwebstudio/cliniq-server:latest
+    platform: linux/amd64
+    container_name: cliniq-server
+    restart: always
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    depends_on:
+      - db
+      
+  db:
+    image: postgres
+    container_name: cliniq-db
+    restart: always
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: cliniq-user
+      POSTGRES_PASSWORD: cliniq-pass
+      POSTGRES_DB: cliniq_db
+    volumes:
+      - root_pgdata:/var/lib/postgresql/data
+
+volumes:
+  root_pgdata:
