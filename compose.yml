@@ -1,25 +1,25 @@
 version: '3.8'
 
 services:
-  app: 
+  app:
     build: .
     image: imranwebstudio/cliniq-server:latest
     platform: linux/amd64
     container_name: cliniq-server
     restart: always
     ports:
-      - "3000:3000"
+      - '3000:3000'
     env_file:
       - .env
     depends_on:
       - db
-      
+
   db:
-    image: postgres:16
+    image: postgres:15
     container_name: cliniq-db
     restart: always
     ports:
-      - "5432:5432"
+      - '5433:5432'
     environment:
       POSTGRES_USER: cliniq-user
       POSTGRES_PASSWORD: cliniq-pass

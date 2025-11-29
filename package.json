@@ -1,7 +1,6 @@
 {
   "name": "server",
   "version": "0.0.1",
-  "type": "module",
   "description": "",
   "author": "",
   "private": true,
@@ -45,7 +44,7 @@
     "rxjs": "^7.8.1",
     "stripe": "^20.0.0",
     "swagger-ui-express": "^5.0.1",
-    "uuid": "^13.0.0"
+    "uuid": "^9.0.1"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.2.0",
