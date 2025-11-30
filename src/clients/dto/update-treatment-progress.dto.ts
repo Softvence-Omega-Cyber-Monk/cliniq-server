@@ -1,5 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsString, IsNotEmpty, IsDateString, IsOptional, IsNumber, Min, Max } from 'class-validator';
+import { IsString, IsNotEmpty, IsDateString, IsOptional, IsNumber, Min, Max, IsArray, ValidateNested } from 'class-validator';
+import { Type } from 'class-transformer';
+import { GoalScoreDto } from './add-treatment-progress.dto';
 
 export class UpdateTreatmentProgressDto {
   @ApiProperty({
@@ -20,24 +22,15 @@ export class UpdateTreatmentProgressDto {
   progressDate?: string;
 
   @ApiProperty({
-    description: 'Goal or metric name',
-    example: 'Anxiety Level',
+    description: 'Array of goals with scores',
+    type: [GoalScoreDto],
     required: false,
   })
-  @IsString()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => GoalScoreDto)
   @IsOptional()
-  goalName?: string;
-
-  @ApiProperty({
-    description: 'Progress score (1-10)',
-    example: 7,
-    required: false,
-  })
-  @IsNumber()
-  @Min(1)
-  @Max(10)
-  @IsOptional()
-  score?: number;
+  goals?: GoalScoreDto[];
 
   @ApiProperty({
     description: 'Progress notes',

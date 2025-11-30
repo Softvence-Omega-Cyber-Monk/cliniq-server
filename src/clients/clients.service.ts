@@ -367,86 +367,90 @@ export class ClientsService {
   /**
    * Add treatment progress
    */
-  async addTreatmentProgress(therapistId: string, clientId: string, dto: AddTreatmentProgressDto) {
-    const client = await this.verifyClientAccess(therapistId, clientId);
+async addTreatmentProgress(therapistId: string, clientId: string, dto: AddTreatmentProgressDto) {
+  const client = await this.verifyClientAccess(therapistId, clientId);
 
-    const treatmentProgress = (client.treatmentProgress as any) || { entries: [] };
-    
-    if (!treatmentProgress.entries) {
-      treatmentProgress.entries = [];
-    }
-
-    const newProgress = {
-      progressId: uuidv4(),
-      progressDate: dto.progressDate,
-      goalName: dto.goalName,
-      score: dto.score,
-      notes: dto.notes,
-      createdAt: new Date().toISOString(),
-    };
-
-    treatmentProgress.entries.push(newProgress);
-
-    const updated = await this.prisma.client.update({
-      where: { id: clientId },
-      data: {
-        treatmentProgress: treatmentProgress,
-      },
-      select: {
-        id: true,
-        name: true,
-        treatmentProgress: true,
-      },
-    });
-
-    return {
-      client: updated,
-      addedProgress: newProgress,
-    };
+  const treatmentProgress = (client.treatmentProgress as any) || { entries: [] };
+  
+  if (!treatmentProgress.entries) {
+    treatmentProgress.entries = [];
   }
+
+  const newProgress = {
+    progressId: uuidv4(),
+    progressDate: dto.progressDate,
+    goals: dto.goals, // Now an array of {goalName, score}
+    notes: dto.notes,
+    createdAt: new Date().toISOString(),
+  };
+
+  treatmentProgress.entries.push(newProgress);
+
+  const updated = await this.prisma.client.update({
+    where: { id: clientId },
+    data: {
+      treatmentProgress: treatmentProgress,
+    },
+    select: {
+      id: true,
+      name: true,
+      treatmentProgress: true,
+    },
+  });
+
+  return {
+    client: updated,
+    addedProgress: newProgress,
+  };
+}
 
   /**
    * Update treatment progress
    */
   async updateTreatmentProgress(therapistId: string, clientId: string, dto: UpdateTreatmentProgressDto) {
-    const client = await this.verifyClientAccess(therapistId, clientId);
+  const client = await this.verifyClientAccess(therapistId, clientId);
 
-    const treatmentProgress = (client.treatmentProgress as any) || { entries: [] };
-    
-    if (!treatmentProgress.entries) {
-      throw new NotFoundException('No treatment progress entries found');
-    }
-
-    const progressIndex = treatmentProgress.entries.findIndex(p => p.progressId === dto.progressId);
-
-    if (progressIndex === -1) {
-      throw new NotFoundException('Progress record not found');
-    }
-
-    // Update only provided fields
-    if (dto.progressDate !== undefined) treatmentProgress.entries[progressIndex].progressDate = dto.progressDate;
-    if (dto.goalName !== undefined) treatmentProgress.entries[progressIndex].goalName = dto.goalName;
-    if (dto.score !== undefined) treatmentProgress.entries[progressIndex].score = dto.score;
-    if (dto.notes !== undefined) treatmentProgress.entries[progressIndex].notes = dto.notes;
-    treatmentProgress.entries[progressIndex].updatedAt = new Date().toISOString();
-
-    const updated = await this.prisma.client.update({
-      where: { id: clientId },
-      data: {
-        treatmentProgress: treatmentProgress,
-      },
-      select: {
-        id: true,
-        name: true,
-        treatmentProgress: true,
-      },
-    });
-
-    return {
-      client: updated,
-      updatedProgress: treatmentProgress.entries[progressIndex],
-    };
+  const treatmentProgress = (client.treatmentProgress as any) || { entries: [] };
+  
+  if (!treatmentProgress.entries) {
+    throw new NotFoundException('No treatment progress entries found');
   }
+
+  const progressIndex = treatmentProgress.entries.findIndex(p => p.progressId === dto.progressId);
+
+  if (progressIndex === -1) {
+    throw new NotFoundException('Progress record not found');
+  }
+
+  // Update only provided fields
+  if (dto.progressDate !== undefined) {
+    treatmentProgress.entries[progressIndex].progressDate = dto.progressDate;
+  }
+  if (dto.goals !== undefined) {
+    treatmentProgress.entries[progressIndex].goals = dto.goals;
+  }
+  if (dto.notes !== undefined) {
+    treatmentProgress.entries[progressIndex].notes = dto.notes;
+  }
+  treatmentProgress.entries[progressIndex].updatedAt = new Date().toISOString();
+
+  const updated = await this.prisma.client.update({
+    where: { id: clientId },
+    data: {
+      treatmentProgress: treatmentProgress,
+    },
+    select: {
+      id: true,
+      name: true,
+      treatmentProgress: true,
+    },
+  });
+
+  return {
+    client: updated,
+    updatedProgress: treatmentProgress.entries[progressIndex],
+  };
+}
 
   /**
    * Helper: Verify client belongs to therapist
