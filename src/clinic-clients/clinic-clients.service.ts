@@ -16,7 +16,7 @@ import { AssignTherapistDto } from './dto/assign-therapist.dto';
 
 @Injectable()
 export class ClinicClientsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private prisma: PrismaService) { }
 
   /**
    * Create a new client under clinic (without therapist)
@@ -92,7 +92,7 @@ export class ClinicClientsService {
     // Verify clinic exists
     const clinic = await this.prisma.privateClinic.findUnique({
       where: { id: clinicId },
-      select: { 
+      select: {
         id: true,
         privatePracticeName: true,
       },
@@ -189,9 +189,9 @@ export class ClinicClientsService {
       if (client.sessionHistory && Array.isArray(client.sessionHistory)) {
         const sessions = client.sessionHistory as any[];
         totalSessions = sessions.length;
-        
+
         if (sessions.length > 0) {
-          const sortedSessions = sessions.sort((a, b) => 
+          const sortedSessions = sessions.sort((a, b) =>
             new Date(b.sessionDate).getTime() - new Date(a.sessionDate).getTime()
           );
           lastSessionDate = new Date(sortedSessions[0].sessionDate);
@@ -205,7 +205,7 @@ export class ClinicClientsService {
       if (client.appointments.length > 0) {
         const lastAppointment = client.appointments[0];
         const appointmentDate = new Date(lastAppointment.scheduledDate);
-        
+
         if (!lastSessionDate || appointmentDate > lastSessionDate) {
           lastSessionDate = appointmentDate;
         }
@@ -218,18 +218,18 @@ export class ClinicClientsService {
           const aptDate = new Date(apt.scheduledDate);
           return aptDate > now && apt.status === 'scheduled';
         })
-        .sort((a, b) => 
+        .sort((a, b) =>
           new Date(a.scheduledDate).getTime() - new Date(b.scheduledDate).getTime()
         );
 
-      const nextSessionDate = upcomingAppointments.length > 0 
+      const nextSessionDate = upcomingAppointments.length > 0
         ? new Date(upcomingAppointments[0].scheduledDate)
         : null;
 
       // Determine provider name (therapist or clinic)
       let providerName: string;
       let providerId: string;
-      
+
       if (client.therapist) {
         providerName = client.therapist.fullName;
         providerId = client.therapist.id;
@@ -419,7 +419,7 @@ export class ClinicClientsService {
     const client = await this.verifyClientAccess(clinicId, clientId);
 
     const sessionHistory = (client.sessionHistory as any[]) || [];
-    
+
     const newSession = {
       sessionId: uuidv4(),
       sessionDate: dto.sessionDate,
@@ -493,7 +493,7 @@ export class ClinicClientsService {
     const client = await this.verifyClientAccess(clinicId, clientId);
 
     const crisisHistories = (client.crisisHistories as any[]) || [];
-    
+
     const newCrisis = {
       crisisId: uuidv4(),
       crisisDate: dto.crisisDate,
@@ -569,7 +569,7 @@ export class ClinicClientsService {
     const client = await this.verifyClientAccess(clinicId, clientId);
 
     const treatmentProgress = (client.treatmentProgress as any) || { entries: [] };
-    
+
     if (!treatmentProgress.entries) {
       treatmentProgress.entries = [];
     }
@@ -577,8 +577,7 @@ export class ClinicClientsService {
     const newProgress = {
       progressId: uuidv4(),
       progressDate: dto.progressDate,
-      goalName: dto.goalName,
-      score: dto.score,
+      goals: dto.goals, // Changed from goalName/score to goals array
       notes: dto.notes,
       createdAt: new Date().toISOString(),
     };
@@ -610,7 +609,7 @@ export class ClinicClientsService {
     const client = await this.verifyClientAccess(clinicId, clientId);
 
     const treatmentProgress = (client.treatmentProgress as any) || { entries: [] };
-    
+
     if (!treatmentProgress.entries) {
       throw new NotFoundException('No treatment progress entries found');
     }
@@ -621,10 +620,16 @@ export class ClinicClientsService {
       throw new NotFoundException('Progress record not found');
     }
 
-    if (dto.progressDate !== undefined) treatmentProgress.entries[progressIndex].progressDate = dto.progressDate;
-    if (dto.goalName !== undefined) treatmentProgress.entries[progressIndex].goalName = dto.goalName;
-    if (dto.score !== undefined) treatmentProgress.entries[progressIndex].score = dto.score;
-    if (dto.notes !== undefined) treatmentProgress.entries[progressIndex].notes = dto.notes;
+    // Update only provided fields
+    if (dto.progressDate !== undefined) {
+      treatmentProgress.entries[progressIndex].progressDate = dto.progressDate;
+    }
+    if (dto.goals !== undefined) {
+      treatmentProgress.entries[progressIndex].goals = dto.goals;
+    }
+    if (dto.notes !== undefined) {
+      treatmentProgress.entries[progressIndex].notes = dto.notes;
+    }
     treatmentProgress.entries[progressIndex].updatedAt = new Date().toISOString();
 
     const updated = await this.prisma.client.update({
