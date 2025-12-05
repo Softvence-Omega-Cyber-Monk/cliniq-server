@@ -11,10 +11,11 @@ import { v4 as uuidv4 } from 'uuid';
 import { UpdateSessionHistoryDto } from './dto/update-session-history.dto';
 import { UpdateCrisisHistoryDto } from './dto/update-crisis-history.dto';
 import { UpdateTreatmentProgressDto } from './dto/update-treatment-progress.dto';
+import { SuspendClientDto } from './dto/suspend-client.dto';
 
 @Injectable()
 export class ClientsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private prisma: PrismaService) { }
 
   /**
    * Create a new client
@@ -136,9 +137,9 @@ export class ClientsService {
       if (client.sessionHistory && Array.isArray(client.sessionHistory)) {
         const sessions = client.sessionHistory as any[];
         sessionCount = sessions.length;
-        
+
         if (sessions.length > 0) {
-          const sortedSessions = sessions.sort((a, b) => 
+          const sortedSessions = sessions.sort((a, b) =>
             new Date(b.sessionDate).getTime() - new Date(a.sessionDate).getTime()
           );
           lastSession = new Date(sortedSessions[0].sessionDate);
@@ -219,7 +220,7 @@ export class ClientsService {
     const client = await this.verifyClientAccess(therapistId, clientId);
 
     const sessionHistory = (client.sessionHistory as any[]) || [];
-    
+
     const newSession = {
       sessionId: uuidv4(),
       sessionDate: dto.sessionDate,
@@ -294,7 +295,7 @@ export class ClientsService {
     const client = await this.verifyClientAccess(therapistId, clientId);
 
     const crisisHistories = (client.crisisHistories as any[]) || [];
-    
+
     const newCrisis = {
       crisisId: uuidv4(),
       crisisDate: dto.crisisDate,
@@ -367,90 +368,118 @@ export class ClientsService {
   /**
    * Add treatment progress
    */
-async addTreatmentProgress(therapistId: string, clientId: string, dto: AddTreatmentProgressDto) {
-  const client = await this.verifyClientAccess(therapistId, clientId);
+  async addTreatmentProgress(therapistId: string, clientId: string, dto: AddTreatmentProgressDto) {
+    const client = await this.verifyClientAccess(therapistId, clientId);
 
-  const treatmentProgress = (client.treatmentProgress as any) || { entries: [] };
-  
-  if (!treatmentProgress.entries) {
-    treatmentProgress.entries = [];
+    const treatmentProgress = (client.treatmentProgress as any) || { entries: [] };
+
+    if (!treatmentProgress.entries) {
+      treatmentProgress.entries = [];
+    }
+
+    const newProgress = {
+      progressId: uuidv4(),
+      progressDate: dto.progressDate,
+      goals: dto.goals, // Now an array of {goalName, score}
+      notes: dto.notes,
+      createdAt: new Date().toISOString(),
+    };
+
+    treatmentProgress.entries.push(newProgress);
+
+    const updated = await this.prisma.client.update({
+      where: { id: clientId },
+      data: {
+        treatmentProgress: treatmentProgress,
+      },
+      select: {
+        id: true,
+        name: true,
+        treatmentProgress: true,
+      },
+    });
+
+    return {
+      client: updated,
+      addedProgress: newProgress,
+    };
   }
 
-  const newProgress = {
-    progressId: uuidv4(),
-    progressDate: dto.progressDate,
-    goals: dto.goals, // Now an array of {goalName, score}
-    notes: dto.notes,
-    createdAt: new Date().toISOString(),
-  };
+  async suspendClient(therapistId: string, clientId: string, dto: SuspendClientDto) {
+    const client = await this.verifyClientAccess(therapistId, clientId);
 
-  treatmentProgress.entries.push(newProgress);
+    // Check if client is already suspended
+    if (client.status === 'suspended') {
+      throw new BadRequestException('Client is already suspended');
+    }
 
-  const updated = await this.prisma.client.update({
-    where: { id: clientId },
-    data: {
-      treatmentProgress: treatmentProgress,
-    },
-    select: {
-      id: true,
-      name: true,
-      treatmentProgress: true,
-    },
-  });
+    const updated = await this.prisma.client.update({
+      where: { id: clientId },
+      data: {
+        status: 'suspended'
+      },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        status: true,
+        updatedAt: true,
+      },
+    });
 
-  return {
-    client: updated,
-    addedProgress: newProgress,
-  };
-}
+    return {
+      message: 'Client suspended successfully',
+      client: updated,
+    };
+  }
 
   /**
    * Update treatment progress
    */
   async updateTreatmentProgress(therapistId: string, clientId: string, dto: UpdateTreatmentProgressDto) {
-  const client = await this.verifyClientAccess(therapistId, clientId);
+    const client = await this.verifyClientAccess(therapistId, clientId);
 
-  const treatmentProgress = (client.treatmentProgress as any) || { entries: [] };
-  
-  if (!treatmentProgress.entries) {
-    throw new NotFoundException('No treatment progress entries found');
+    const treatmentProgress = (client.treatmentProgress as any) || { entries: [] };
+
+    if (!treatmentProgress.entries) {
+      throw new NotFoundException('No treatment progress entries found');
+    }
+
+    const progressIndex = treatmentProgress.entries.findIndex(p => p.progressId === dto.progressId);
+
+    if (progressIndex === -1) {
+      throw new NotFoundException('Progress record not found');
+    }
+
+    // Update only provided fields
+    if (dto.progressDate !== undefined) {
+      treatmentProgress.entries[progressIndex].progressDate = dto.progressDate;
+    }
+    if (dto.goals !== undefined) {
+      treatmentProgress.entries[progressIndex].goals = dto.goals;
+    }
+    if (dto.notes !== undefined) {
+      treatmentProgress.entries[progressIndex].notes = dto.notes;
+    }
+    treatmentProgress.entries[progressIndex].updatedAt = new Date().toISOString();
+
+    const updated = await this.prisma.client.update({
+      where: { id: clientId },
+      data: {
+        treatmentProgress: treatmentProgress,
+      },
+      select: {
+        id: true,
+        name: true,
+        treatmentProgress: true,
+      },
+    });
+
+    return {
+      client: updated,
+      updatedProgress: treatmentProgress.entries[progressIndex],
+    };
   }
-
-  const progressIndex = treatmentProgress.entries.findIndex(p => p.progressId === dto.progressId);
-
-  if (progressIndex === -1) {
-    throw new NotFoundException('Progress record not found');
-  }
-
-  // Update only provided fields
-  if (dto.progressDate !== undefined) {
-    treatmentProgress.entries[progressIndex].progressDate = dto.progressDate;
-  }
-  if (dto.goals !== undefined) {
-    treatmentProgress.entries[progressIndex].goals = dto.goals;
-  }
-  if (dto.notes !== undefined) {
-    treatmentProgress.entries[progressIndex].notes = dto.notes;
-  }
-  treatmentProgress.entries[progressIndex].updatedAt = new Date().toISOString();
-
-  const updated = await this.prisma.client.update({
-    where: { id: clientId },
-    data: {
-      treatmentProgress: treatmentProgress,
-    },
-    select: {
-      id: true,
-      name: true,
-      treatmentProgress: true,
-    },
-  });
-
-  return {
-    client: updated,
-    updatedProgress: treatmentProgress.entries[progressIndex],
-  };
-}
 
   /**
    * Helper: Verify client belongs to therapist

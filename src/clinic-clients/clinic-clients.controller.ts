@@ -38,7 +38,7 @@ import { AssignTherapistDto } from './dto/assign-therapist.dto';
 @UseGuards(JwtAuthGuard)
 @Controller('clinics/:clinicId/clients')
 export class ClinicClientsController {
-  constructor(private readonly clinicClientsService: ClinicClientsService) {}
+  constructor(private readonly clinicClientsService: ClinicClientsService) { }
 
   // ==================== CLIENT MANAGEMENT ====================
 
@@ -123,15 +123,40 @@ export class ClinicClientsController {
   @Put(':clientId/assign-therapist')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'Assign therapist to client',
-    description: 'Assign or reassign a therapist to a clinic client.',
+    summary: 'Assign therapist or clinic to client',
+    description: 'Assign a therapist from the clinic or assign the clinic itself directly to a client. Use assigneeType to specify whether assigning a therapist or clinic.',
   })
   @ApiResponse({
     status: 200,
-    description: 'Therapist assigned successfully',
+    description: 'Assignment successful',
+    schema: {
+      example: {
+        id: '456e7890-e89b-12d3-a456-426614174000',
+        name: 'John Doe',
+        email: 'john.doe@example.com',
+        therapistId: '789e0123-e89b-12d3-a456-426614174000',
+        clinicId: '123e4567-e89b-12d3-a456-426614174000',
+        therapist: {
+          id: '789e0123-e89b-12d3-a456-426614174000',
+          fullName: 'Dr. Jane Smith',
+          email: 'jane.smith@example.com',
+          phone: '+1234567890',
+          speciality: 'Clinical Psychology',
+        },
+        clinic: {
+          id: '123e4567-e89b-12d3-a456-426614174000',
+          fullName: 'Dr. Michael Brown',
+          privatePracticeName: 'Mindful Care Clinic',
+          email: 'info@mindfulcare.com',
+          phone: '+1234567890',
+        },
+        assignedTo: 'therapist',
+      },
+    },
   })
+  @ApiResponse({ status: 400, description: 'Bad Request - Invalid assignee type or missing therapistId' })
   @ApiResponse({ status: 401, description: 'Unauthorized' })
-  @ApiResponse({ status: 404, description: 'Client or therapist not found' })
+  @ApiResponse({ status: 404, description: 'Client, therapist, or clinic not found' })
   @ApiParam({
     name: 'clinicId',
     description: 'Clinic ID',
@@ -369,6 +394,7 @@ export class ClinicClientsController {
   ) {
     return this.clinicClientsService.addTreatmentProgress(clinicId, clientId, dto);
   }
+
 
   @Put(':clientId/treatment-progress')
   @HttpCode(HttpStatus.OK)
