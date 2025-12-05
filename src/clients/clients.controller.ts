@@ -10,6 +10,7 @@ import {
   Request,
   HttpCode,
   HttpStatus,
+  Patch,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -34,13 +35,14 @@ import { SearchClientDto } from './dto/search-client.dto';
 import { UpdateSessionHistoryDto } from './dto/update-session-history.dto';
 import { UpdateCrisisHistoryDto } from './dto/update-crisis-history.dto';
 import { UpdateTreatmentProgressDto } from './dto/update-treatment-progress.dto';
+import { SuspendClientDto } from './dto/suspend-client.dto';
 
 @ApiTags('Clients')
 @ApiBearerAuth('bearer')
 @UseGuards(JwtAuthGuard)
 @Controller('therapists/:therapistId/clients')
 export class ClientsController {
-  constructor(private readonly clientsService: ClientsService) {}
+  constructor(private readonly clientsService: ClientsService) { }
 
   // ==================== CLIENT MANAGEMENT ====================
 
@@ -67,6 +69,37 @@ export class ClientsController {
     @Body() dto: CreateClientDto,
   ) {
     return this.clientsService.createClient(therapistId, dto);
+  }
+
+  //======================SUSPEND CLIENT=======================
+  @Patch(':clientId/suspend')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Suspend a client',
+    description: 'Change client status to suspended. This will pause active treatment.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Client suspended successfully',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  @ApiResponse({ status: 404, description: 'Client not found' })
+  @ApiParam({
+    name: 'therapistId',
+    description: 'Therapist ID',
+    example: '123e4567-e89b-12d3-a456-426614174000',
+  })
+  @ApiParam({
+    name: 'clientId',
+    description: 'Client ID',
+    example: '456e7890-e89b-12d3-a456-426614174000',
+  })
+  async suspendClient(
+    @Param('therapistId') therapistId: string,
+    @Param('clientId') clientId: string,
+    @Body() dto: SuspendClientDto,
+  ) {
+    return this.clientsService.suspendClient(therapistId, clientId, dto);
   }
 
   // ==================== OVERALL PROGRESS ====================

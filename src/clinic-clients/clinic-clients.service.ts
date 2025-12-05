@@ -18,9 +18,6 @@ import { AssignTherapistDto } from './dto/assign-therapist.dto';
 export class ClinicClientsService {
   constructor(private prisma: PrismaService) { }
 
-  /**
-   * Create a new client under clinic (without therapist)
-   */
   async createClient(clinicId: string, dto: CreateClinicClientDto) {
     // Verify clinic exists
     const clinic = await this.prisma.privateClinic.findUnique({
@@ -335,23 +332,50 @@ export class ClinicClientsService {
     // Verify client access
     await this.verifyClientAccess(clinicId, clientId);
 
-    // Verify therapist exists and belongs to clinic
-    const therapist = await this.prisma.therapist.findFirst({
-      where: {
-        id: dto.therapistId,
-        clinicId: clinicId,
-      },
+    // Verify clinic exists
+    const clinic = await this.prisma.privateClinic.findUnique({
+      where: { id: clinicId },
     });
 
-    if (!therapist) {
-      throw new NotFoundException('Therapist not found or not part of this clinic');
+    if (!clinic) {
+      throw new NotFoundException('Clinic not found');
+    }
+
+    let updateData: any;
+
+    if (dto.assigneeType === 'therapist') {
+      // Assigning a therapist
+      if (!dto.therapistId) {
+        throw new BadRequestException('therapistId is required when assigneeType is therapist');
+      }
+
+      // Verify therapist exists and belongs to clinic
+      const therapist = await this.prisma.therapist.findFirst({
+        where: {
+          id: dto.therapistId,
+          clinicId: clinicId,
+        },
+      });
+
+      if (!therapist) {
+        throw new NotFoundException('Therapist not found or not part of this clinic');
+      }
+
+      updateData = {
+        therapistId: dto.therapistId,
+        clinicId: clinicId, // Keep clinic reference
+      };
+    } else {
+      // Assigning clinic directly (no therapist)
+      updateData = {
+        therapistId: null,
+        clinicId: clinicId,
+      };
     }
 
     const updated = await this.prisma.client.update({
       where: { id: clientId },
-      data: {
-        therapistId: dto.therapistId,
-      },
+      data: updateData,
       include: {
         therapist: {
           select: {
@@ -362,12 +386,24 @@ export class ClinicClientsService {
             speciality: true,
           },
         },
+        clinic: {
+          select: {
+            id: true,
+            fullName: true,
+            privatePracticeName: true,
+            email: true,
+            phone: true,
+          },
+        },
       },
     });
 
-    return updated;
+    return {
+      ...updated,
+      assignedTo: dto.assigneeType === 'therapist' ? 'therapist' : 'clinic',
+    };
   }
-
+  
   /**
    * Update overall progress
    */
@@ -389,10 +425,6 @@ export class ClinicClientsService {
 
     return updated;
   }
-
-  /**
-   * Update treatment goals
-   */
   async updateTreatmentGoals(clinicId: string, clientId: string, dto: UpdateTreatmentGoalsDto) {
     await this.verifyClientAccess(clinicId, clientId);
 
